@@ -257,5 +257,11 @@ To simplify knowing which commands you need to run and when you can follow these
         <sub><b>Omar Sagoo</b></sub>
       </a>
     </td>
+    <td>
+      <a href="https://github.com/Ajmaljalal.png">
+        <img src="https://github.com/Ajmaljalal.png" width="100" height="100" alt="Ajmal Jalal"/><br />
+        <sub><b>Ajmal Jalal</b></sub>
+      </a>
+    </td>
   </tr>
 </table>

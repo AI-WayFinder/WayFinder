@@ -60,3 +60,10 @@ class MemoryService:
                 content="Hi. I’m WayFinder, your travel planning assistant. Where would you like to go?",
             ),
         ]
+
+    @classmethod
+    def get_latest_user_message(cls) -> str:
+        for message in reversed(st.session_state[cls.SESSION_KEY]):
+            if message.role == "user":
+                return message.content
+        return ""

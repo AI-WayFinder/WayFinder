@@ -72,7 +72,7 @@ class FlightAPIService:
         data = response.json()
 
         return {
-            "flights": data.get("Flights", []),
+            "flights": data.get("flights", []),
             "success": True,
             "origin": origin,
             "destination": destination,

@@ -1,7 +1,6 @@
 import json
 import logging
 import re
-from datetime import date, timedelta
 from typing import Any
 
 from services.airport_search_service import search_airports
@@ -9,6 +8,39 @@ from services.flight_api import FlightAPIService
 
 log = logging.getLogger("wayfinder.tools")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _format_arrival(raw: dict[str, Any]) -> str:
+    arrival = str(raw.get("arrival", "")).strip() or "Unknown arrival"
+    ahead = str(raw.get("arrival_time_ahead", "")).strip()
+    return f"{arrival} {ahead}".strip()
+
+
+def _format_stops(raw: dict[str, Any]) -> str:
+    stops = raw.get("stops")
+    if stops == 0:
+        return "nonstop"
+    if stops == 1:
+        return "1 stop"
+    if isinstance(stops, int) and stops > 1:
+        return f"{stops} stops"
+    return "Unknown stops"
+
+
+def _compact_flight(raw: dict[str, Any]) -> dict[str, str]:
+    airline = raw.get("airline", {})
+    airline_name = "Unknown airline"
+    if isinstance(airline, dict):
+        airline_name = str(airline.get("name", "")).strip() or airline_name
+
+    return {
+        "airline": airline_name,
+        "departure_time": str(raw.get("departure", "")).strip() or "Unknown departure",
+        "arrival_time": _format_arrival(raw),
+        "duration": str(raw.get("duration", "")).strip() or "Unknown duration",
+        "stops": _format_stops(raw),
+        "price": str(raw.get("price", "")).strip() or "Unknown price",
+    }
 
 
 class ToolExecutor:
@@ -87,22 +119,47 @@ class ToolExecutor:
                 top = [f for f in all_flights if f.get("is_top")]
                 rest = [f for f in all_flights if not f.get("is_top")]
                 ranked = (top + rest)[:5]
+                compact_ranked = [_compact_flight(f) for f in ranked]
                 dep_date = raw.get("departure_date", departure_date)
+                if not ranked:
+                    payload = {
+                        "success": True,
+                        "origin": raw.get("origin"),
+                        "destination": raw.get("destination"),
+                        "departure_date": dep_date,
+                        "flights": [],
+                        "total_returned": 0,
+                        "no_results": True,
+                        "instruction": (
+                            "Tell the user that no flights were found for this exact route and date. "
+                            "Do NOT mention direct flights, nonstop flights, or any other availability details "
+                            "that are not in the tool result. Ask whether they want to try a different date, "
+                            "nearby airport, or route."
+                        ),
+                    }
+                    log.info(
+                        "TOOL RESULT search_flights  %s→%s date=%s flights=0",
+                        origin,
+                        destination,
+                        dep_date,
+                    )
+                    return json.dumps(payload)
+
                 payload = {
                     "success": True,
                     "origin": raw.get("origin"),
                     "destination": raw.get("destination"),
                     "departure_date": dep_date,
-                    "flights": ranked,
-                    "total_returned": len(ranked),
+                    "flights": compact_ranked,
+                    "total_returned": len(compact_ranked),
                     "instruction": (
-                        f"Present ALL {len(ranked)} flights below to the user as a numbered list. "
-                        f"Include the departure date ({dep_date}) in your response header. "
-                        "For each flight show: airline, departure time, arrival time, duration, stops, and price. "
-                        "Do NOT skip any. Do NOT add flights not in this list."
+                        f"Present ALL {len(compact_ranked)} flights below as a short numbered list. "
+                        f"Use a one-line header with the route and departure date ({dep_date}). "
+                        "For each flight show only: airline, departure time, arrival time, duration, stops, and price. "
+                        "Do not print JSON, raw field names, nested objects, or extra technical details."
                     ),
                 }
-                log.info("TOOL RESULT search_flights  %s→%s date=%s flights=%d", origin, destination, dep_date, len(ranked))
+                log.info("TOOL RESULT search_flights  %s→%s date=%s flights=%d", origin, destination, dep_date, len(compact_ranked))
                 return json.dumps(payload)
 
             log.error("TOOL RESULT search_flights  unexpected shape: %s", str(raw)[:200])

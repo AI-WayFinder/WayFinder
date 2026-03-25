@@ -69,30 +69,40 @@ def search_airports(query: str, limit: int = 12) -> list[dict[str, str]]:
         return []
     lim = max(1, min(limit, 30))
     all_rows = _load_airports()
+    metro_codes = {
+        row.city_code
+        for row in all_rows
+        if row.city and row.city.lower() == q and row.city_code
+    }
     scored: list[tuple[int, AirportRow]] = []
     for row in all_rows:
         hay = f"{row.code} {row.name} {row.city} {row.county} {row.state} {row.country_id}".lower()
-        if q not in hay:
+        metro_match = bool(metro_codes and row.city_code in metro_codes)
+        if q not in hay and not metro_match:
             continue
         is_intl = "international" in row.name.lower()
         name_has_q = q in row.name.lower()
         city_exact = row.city.lower() == q
         if row.code.lower() == q:
             priority = 10
-        elif city_exact and is_intl:
+        elif metro_match and is_intl:
             priority = 9
-        elif name_has_q and is_intl:
-            priority = 8
-        elif city_exact:
+        elif metro_match:
             priority = 7
-        elif name_has_q:
+        elif city_exact and is_intl:
+            priority = 8
+        elif name_has_q and is_intl:
             priority = 6
+        elif city_exact:
+            priority = 5
+        elif name_has_q:
+            priority = 4
         elif row.city.lower().startswith(q):
-            priority = 5 if is_intl else 4
+            priority = 3 if is_intl else 2
         elif row.county.lower().startswith(q):
-            priority = 3
-        else:
             priority = 1
+        else:
+            priority = 0
         scored.append((priority, row))
     scored.sort(key=lambda x: (-x[0], x[1].code))
     out: list[dict[str, str]] = []

@@ -16,6 +16,7 @@ class SafetyService:
         longitude: float,
         country: str | None = None,
         location_name: str | None = None,
+        include_details: bool = False,
     ) -> dict[str, Any]:
         error = self._validate(latitude, longitude)
         if error:
@@ -24,10 +25,10 @@ class SafetyService:
                 safety_score=None,
                 risk_band=None,
                 model_version="v6",
-                latitude=latitude,
-                longitude=longitude,
-                country=country,
-                location_name=location_name,
+                latitude=float(latitude) if self._is_number_like(latitude) else latitude,
+                longitude=float(longitude) if self._is_number_like(longitude) else longitude,
+                country=self._clean_optional_str(country),
+                location_name=self._clean_optional_str(location_name),
                 details={},
                 error=error,
             )
@@ -36,18 +37,63 @@ class SafetyService:
         req = SafetyRequest(
             latitude=float(latitude),
             longitude=float(longitude),
-            country=country.strip() if isinstance(country, str) and country.strip() else None,
-            location_name=location_name.strip() if isinstance(location_name, str) and location_name.strip() else None,
+            country=self._clean_optional_str(country),
+            location_name=self._clean_optional_str(location_name),
         )
 
-        pred = self._predictor.predict_score(
-            latitude=req.latitude,
-            longitude=req.longitude,
-            country=req.country,
+        return self.assess_request(req, include_details=include_details)
+
+    def assess_request(
+        self,
+        req: SafetyRequest,
+        include_details: bool = False,
+    ) -> dict[str, Any]:
+        error = self._validate(req.latitude, req.longitude)
+        if error:
+            result = SafetyResult(
+                success=False,
+                safety_score=None,
+                risk_band=None,
+                model_version="v6",
+                latitude=req.latitude,
+                longitude=req.longitude,
+                country=req.country,
+                location_name=req.location_name,
+                details={},
+                error=error,
+            )
+            return result.to_dict()
+
+        pred = (
+            self._predictor.predict_with_features(
+                latitude=req.latitude,
+                longitude=req.longitude,
+                country=req.country,
+            )
+            if include_details
+            else self._predictor.predict_score(
+                latitude=req.latitude,
+                longitude=req.longitude,
+                country=req.country,
+            )
         )
 
         score = float(pred["safety_score"])
         band = self._score_to_band(score)
+
+        details: dict[str, Any] = {
+            "feature_count": pred.get("feature_count"),
+            "agreement_band": pred.get("agreement_band"),
+            "model_spread": pred.get("model_spread"),
+            "mlp_score_v6": pred.get("mlp_score_v6"),
+            "rf_score_v6": pred.get("rf_score_v6"),
+            "models_used": pred.get("models_used"),
+            "input": pred.get("input"),
+        }
+
+        if include_details:
+            details["features_used"] = pred.get("features_used")
+            details["features"] = pred.get("features")
 
         result = SafetyResult(
             success=True,
@@ -58,9 +104,7 @@ class SafetyService:
             longitude=req.longitude,
             country=req.country,
             location_name=req.location_name,
-            details={
-                "feature_count": pred.get("feature_count"),
-            },
+            details=details,
             error=None,
         )
         return result.to_dict()
@@ -89,3 +133,16 @@ class SafetyService:
         if score >= 35:
             return "elevated"
         return "high"
+
+    def _clean_optional_str(self, value: Any) -> str | None:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return None
+
+    def _is_number_like(self, value: Any) -> bool:
+        try:
+            float(value)
+            return True
+        except (TypeError, ValueError):
+            return False

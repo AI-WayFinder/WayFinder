@@ -1,7 +1,5 @@
 # app/models/safety/v6_features.py
 
-# app/models/safety/v6_features.py
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -131,7 +129,7 @@ class SafetyV6FeatureBuilder:
             .str.replace("_", "", regex=False)
         )
 
-        # At this point, the CSV columns you showed become:
+        # At this point, the CSV columns become:
         # 'crime_index'      -> 'crimeindex'
         # 'safety_index'     -> 'safetyindex'
         # 'crimeindex_2023'  -> 'crimeindex2023'

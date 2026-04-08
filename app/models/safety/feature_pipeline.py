@@ -1,3 +1,5 @@
+'''Do not use for production inference right now. It currently emits mostly zero placeholders, so it would silently degrade predictions. SafetyV6FeatureBuilder is the real implementation and should remain the production path.'''
+
 from __future__ import annotations
 
 from pathlib import Path

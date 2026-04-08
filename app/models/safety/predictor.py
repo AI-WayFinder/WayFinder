@@ -7,6 +7,204 @@ import joblib
 import numpy as np
 import pandas as pd
 import torch
+
+from .v6_features import SafetyV6FeatureBuilder
+from .v9b_best_mlp_config import (
+    V9B_MODEL_VERSION,
+    V9B_STATE_DICT_PATH,
+    V9B_IMPUTER_PATH,
+    V9B_SCALER_PATH,
+    V9B_FEATURE_COLS,
+    V9B_INPUT_DIM,
+    V9B_HIDDEN_SIZES,
+    V9B_DROPOUT,
+    V9B_ACTIVATION,
+    V9B_USE_BATCHNORM,
+)
+from .v9b_model import TorchMLP
+
+
+ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
+
+
+class SafetyPredictor:
+    """
+    Production safety predictor using the v9b PyTorch MLP.
+
+    Feature generation:
+      - SafetyV6FeatureBuilder builds the full geographic/macroeconomic feature row.
+      - We then subset to the exact saved v9b feature list.
+      - Saved imputer + scaler are applied before Torch inference.
+    """
+
+    def __init__(self, artifacts_dir: Path | None = None) -> None:
+        self.artifacts_dir = artifacts_dir or ARTIFACTS_DIR
+        self.device = torch.device("cpu")
+
+        self.feature_builder = SafetyV6FeatureBuilder()
+        self.feature_cols = V9B_FEATURE_COLS
+
+        self.imputer = self._load_imputer()
+        self.scaler = self._load_scaler()
+        self.model = self._load_mlp_model()
+        self.model.eval()
+
+    def _load_imputer(self) -> Any:
+        if not V9B_IMPUTER_PATH.exists():
+            raise FileNotFoundError(f"Imputer artifact not found at {V9B_IMPUTER_PATH}")
+        return joblib.load(V9B_IMPUTER_PATH)
+
+    def _load_scaler(self) -> Any:
+        if not V9B_SCALER_PATH.exists():
+            raise FileNotFoundError(f"Scaler artifact not found at {V9B_SCALER_PATH}")
+        return joblib.load(V9B_SCALER_PATH)
+
+    def _load_mlp_model(self) -> TorchMLP:
+        if not V9B_STATE_DICT_PATH.exists():
+            raise FileNotFoundError(f"MLP state_dict artifact not found at {V9B_STATE_DICT_PATH}")
+
+        model = TorchMLP(
+            input_dim=V9B_INPUT_DIM,
+            hidden_sizes=V9B_HIDDEN_SIZES,
+            dropout=V9B_DROPOUT,
+            activation=V9B_ACTIVATION,
+            use_batchnorm=V9B_USE_BATCHNORM,
+        ).to(self.device)
+
+        state_dict = torch.load(V9B_STATE_DICT_PATH, map_location=self.device)
+        model.load_state_dict(state_dict)
+        return model
+
+    def _build_features_df(
+        self,
+        latitude: float,
+        longitude: float,
+        country: str | None = None,
+    ) -> pd.DataFrame:
+        all_feats = self.feature_builder.build_all_features(
+            lat=float(latitude),
+            lon=float(longitude),
+            country=country,
+        )
+
+        missing_cols = [c for c in self.feature_cols if c not in all_feats]
+        if missing_cols:
+            raise ValueError(
+                f"Missing expected feature keys from v9b feature builder: {missing_cols}"
+            )
+
+        X = pd.DataFrame(
+            [[all_feats[c] for c in self.feature_cols]],
+            columns=self.feature_cols,
+        )
+        return X
+
+    def _score_to_risk_band(self, score: float) -> str:
+        if score >= 75:
+            return "Low risk"
+        if score >= 60:
+            return "Moderate risk"
+        if score >= 45:
+            return "Elevated risk"
+        return "High risk"
+
+    def predict_score(
+        self,
+        latitude: float,
+        longitude: float,
+        country: str | None = None,
+    ) -> dict[str, Any]:
+        X = self._build_features_df(
+            latitude=latitude,
+            longitude=longitude,
+            country=country,
+        )
+
+        X_imp = self.imputer.transform(X)
+        X_scaled = self.scaler.transform(X_imp)
+
+        with torch.no_grad():
+            x_tensor = torch.tensor(np.asarray(X_scaled), dtype=torch.float32, device=self.device)
+            pred = self.model(x_tensor).detach().cpu().numpy()[0]
+
+        safety_score = float(pred)
+        risk_band = self._score_to_risk_band(safety_score)
+
+        return {
+            "safety_score": safety_score,
+            "risk_band": risk_band,
+            "model_version": V9B_MODEL_VERSION,
+            "models_used": ["v9b_torch_mlp"],
+            "feature_count": len(self.feature_cols),
+            "features_used": self.feature_cols,
+            "input": {
+                "latitude": float(latitude),
+                "longitude": float(longitude),
+                "country": country,
+            },
+        }
+
+    def predict_with_features(
+        self,
+        latitude: float,
+        longitude: float,
+        country: str | None = None,
+    ) -> dict[str, Any]:
+        X = self._build_features_df(
+            latitude=latitude,
+            longitude=longitude,
+            country=country,
+        )
+
+        X_imp = self.imputer.transform(X)
+        X_scaled = self.scaler.transform(X_imp)
+
+        with torch.no_grad():
+            x_tensor = torch.tensor(np.asarray(X_scaled), dtype=torch.float32, device=self.device)
+            pred = self.model(x_tensor).detach().cpu().numpy()[0]
+
+        safety_score = float(pred)
+        risk_band = self._score_to_risk_band(safety_score)
+
+        return {
+            "safety_score": safety_score,
+            "risk_band": risk_band,
+            "model_version": V9B_MODEL_VERSION,
+            "models_used": ["v9b_torch_mlp"],
+            "feature_count": len(self.feature_cols),
+            "features_used": self.feature_cols,
+            "features": X.iloc[0].to_dict(),
+            "input": {
+                "latitude": float(latitude),
+                "longitude": float(longitude),
+                "country": country,
+            },
+        }
+
+    def predict_batch(
+        self,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        outputs: list[dict[str, Any]] = []
+        for row in rows:
+            outputs.append(
+                self.predict_score(
+                    latitude=float(row["latitude"]),
+                    longitude=float(row["longitude"]),
+                    country=row.get("country"),
+                )
+            )
+        return outputs
+'''
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import joblib
+import numpy as np
+import pandas as pd
+import torch
 import torch.nn as nn
 
 from .v6_features import FEATURE_COLS_V6, SafetyV6FeatureBuilder
@@ -277,7 +475,7 @@ class SafetyPredictor:
                 )
             )
         return outputs
-'''
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -428,9 +626,9 @@ class SafetyPredictor:
      above this line is current predictor using both MLP and RF
       
         below are other integrations we do not want to part with yet
-            '''
+            
 
-''' 
+
 from __future__ import annotations
 
 import json

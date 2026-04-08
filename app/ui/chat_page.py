@@ -1,12 +1,16 @@
+from __future__ import annotations
+
+import pandas as pd
 import streamlit as st
 
+from components.location_picker import location_picker
+from models.safety.predictor import SafetyPredictor
+from models.safety.schemas import SafetyRequest
 from services.memory_service import MemoryService
 from services.model_service import ModelService
 from services.safety_service import SafetyService
 from ui.chat_handlers import handle_assistant_response, handle_user_message
 from ui.styles import inject_global_styles
-from components.location_picker import location_picker
-from models.safety.schemas import SafetyRequest
 
 
 @st.cache_resource
@@ -44,22 +48,77 @@ def get_selected_location_fields() -> dict:
     }
 
 
+FIXED_TEST_POINTS = [
+    {"location_name": "San Diego, CA", "country": "United States", "latitude": 32.7157, "longitude": -117.1611},
+    {"location_name": "New York, NY", "country": "United States", "latitude": 40.7128, "longitude": -74.0060},
+    {"location_name": "Detroit, MI", "country": "United States", "latitude": 42.3314, "longitude": -83.0458},
+    {"location_name": "Salt Lake City, UT", "country": "United States", "latitude": 40.7608, "longitude": -111.8910},
+    {"location_name": "Boulder, CO", "country": "United States", "latitude": 40.0150, "longitude": -105.2705},
+    {"location_name": "London", "country": "United Kingdom", "latitude": 51.5074, "longitude": -0.1278},
+    {"location_name": "Cape Town", "country": "South Africa", "latitude": -33.9249, "longitude": 18.4241},
+    {"location_name": "Tokyo", "country": "Japan", "latitude": 35.6762, "longitude": 139.6503},
+    {"location_name": "Mexico City", "country": "Mexico", "latitude": 19.4326, "longitude": -99.1332},
+    {"location_name": "Reykjavik", "country": "Iceland", "latitude": 64.1466, "longitude": -21.9426},
+]
+
+
+SMALL_TOWN_TEST_POINTS = [
+    {"location_name": "Moab, UT", "country": "United States", "latitude": 38.5733, "longitude": -109.5498},
+    {"location_name": "Kanab, UT", "country": "United States", "latitude": 37.0475, "longitude": -112.5263},
+    {"location_name": "Marfa, TX", "country": "United States", "latitude": 30.3094, "longitude": -104.0206},
+    {"location_name": "Cody, WY", "country": "United States", "latitude": 44.5263, "longitude": -109.0565},
+    {"location_name": "Bishop, CA", "country": "United States", "latitude": 37.3635, "longitude": -118.3951},
+    {"location_name": "Taos, NM", "country": "United States", "latitude": 36.4072, "longitude": -105.5731},
+    {"location_name": "Sedona, AZ", "country": "United States", "latitude": 34.8697, "longitude": -111.7610},
+    {"location_name": "Ajo, AZ", "country": "United States", "latitude": 32.3717, "longitude": -112.8607},
+    {"location_name": "Terlingua, TX", "country": "United States", "latitude": 29.3291, "longitude": -103.5602},
+    {"location_name": "Escalante, UT", "country": "United States", "latitude": 37.7700, "longitude": -111.6027},
+]
+
+
+def run_model_comparison_batch(predictor, points: list[dict]) -> pd.DataFrame:
+    rows = []
+    for p in points:
+        row = predictor.compare_all_models(
+            latitude=p["latitude"],
+            longitude=p["longitude"],
+            country=p["country"],
+            location_name=p["location_name"],
+        )
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    score_cols = ["v9b_score", "v6_mlp_score", "v6_rf_score", "spread_max_min"]
+    for col in score_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
+
+    return df
+
+
+def init_chat_page_state() -> None:
+    defaults = {
+        "selected_location": None,
+        "safety_result": None,
+        "safety_debug": None,
+        "comparison_fixed_df": None,
+        "comparison_small_town_df": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
 def render_chat_page() -> None:
+    init_chat_page_state()
+
     st.title("Travel Agent AI")
     inject_global_styles()
 
     MemoryService.initialize()
     model_service = get_model_service()
     safety_service = get_safety_service()
-
-    if "selected_location" not in st.session_state:
-        st.session_state["selected_location"] = None
-
-    if "safety_result" not in st.session_state:
-        st.session_state["safety_result"] = None
-
-    if "safety_debug" not in st.session_state:
-        st.session_state["safety_debug"] = None
 
     with st.expander("Pick a location on the map", expanded=False):
         picked_location = location_picker(
@@ -169,3 +228,39 @@ def render_chat_page() -> None:
     if user_input:
         handle_user_message(user_input)
         handle_assistant_response(model_service)
+
+    st.markdown("## Model comparison test harness")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Run 10 fixed-city comparison"):
+            predictor = SafetyPredictor()
+            st.session_state["comparison_fixed_df"] = run_model_comparison_batch(
+                predictor,
+                FIXED_TEST_POINTS,
+            )
+
+    with col2:
+        if st.button("Run 10 small-town comparison"):
+            predictor = SafetyPredictor()
+            st.session_state["comparison_small_town_df"] = run_model_comparison_batch(
+                predictor,
+                SMALL_TOWN_TEST_POINTS,
+            )
+
+    if st.session_state.get("comparison_fixed_df") is not None:
+        st.markdown("### Fixed-city results")
+        st.dataframe(
+            st.session_state["comparison_fixed_df"],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if st.session_state.get("comparison_small_town_df") is not None:
+        st.markdown("### Small-town results")
+        st.dataframe(
+            st.session_state["comparison_small_town_df"],
+            use_container_width=True,
+            hide_index=True,
+        )

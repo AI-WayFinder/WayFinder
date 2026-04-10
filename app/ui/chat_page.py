@@ -76,17 +76,21 @@ def _render_sidebar(safety_service: SafetyService) -> None:
             st.session_state["departure_date_picker"] = st.session_state.get(
                 "departure_date"
             ) or datetime.date.today() + datetime.timedelta(days=1)
-        elif st.session_state.get("departure_date"):
-            # Overwrite the widget's state directly so it re-renders with the new value
-            st.session_state["departure_date_picker"] = st.session_state[
-                "departure_date"
-            ]
+        else:
+            # Sync from canonical store — only safe before the widget renders
+            stored = st.session_state.get("departure_date")
+            if (
+                stored
+                and stored != st.session_state["departure_date_picker"]
+                and st.session_state.get("_date_from_chat")
+            ):
+                st.session_state["departure_date_picker"] = stored
 
         picked_date = st.date_input(
             label="Travel date",
             label_visibility="collapsed",
             min_value=datetime.date.today(),
-            key="departure_date_picker",  # no value= param — key drives it
+            key="departure_date_picker",
         )
 
         if picked_date:
@@ -96,6 +100,7 @@ def _render_sidebar(safety_service: SafetyService) -> None:
                 f"{'💬 Updated from chat' if date_source else '📅'} "
                 f"**{picked_date.strftime('%A, %b %d %Y')}**"
             )
+            st.session_state["_date_from_chat"] = None
 
         st.divider()
 

@@ -8,6 +8,7 @@ from services.model_service import ModelService
 from services.safety_service import SafetyService
 from ui.chat_handlers import handle_assistant_response, handle_user_message
 from ui.styles import inject_global_styles
+from ui.translate_widget import render_translate_widget
 from components.location_picker import location_picker
 from models.safety.schemas import SafetyRequest
 
@@ -279,6 +280,7 @@ def render_chat_page() -> None:
         initial_sidebar_state="expanded",
     )
     inject_global_styles()
+    render_translate_widget()
 
     st.html(
         '<div class="wf-hero">'

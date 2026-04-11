@@ -1,380 +1,249 @@
 # WayFinder
 
-WayFinder is a local travel planning assistant that pairs a Streamlit chat UI
-with a locally-hosted Qwen model, a live flight search backend, and an
-ML-driven city safety scorer. Pick a destination on the map (or just type
-"flights to Vancouver"), give it a date, and the agent searches flights
-across nearby airports and reports a safety read on each destination city.
+An AI-powered travel planning assistant that combines a local large language model with real-time flight search and ML-based destination safety scoring. Users can search flights through natural language conversation, explore destinations on an interactive map, and get safety assessments powered by an ensemble of neural network and random forest models.
 
 ## Features
 
-- **Chat-driven destination & date updates** — say "flights to Tokyo" or
-  "I want to fly next Friday" and the sidebar travel context updates in
-  place, no need to touch the date picker or map.
-- **Multi-airport flight search** — one query fans out across all airports
-  serving the destination metro and renders results grouped by airport with
-  airline, duration, stops, and price.
-- **Per-destination safety dial** — each airport card shows a compact
-  numbered gauge (0–100) with risk band (low / moderate / elevated / high),
-  pulled from a KNN-based city safety model.
-- **Deterministic safety path** — asking "Is Paris safe?" or "Safety
-  Vancouver" skips the model entirely and calls the safety assessment tool
-  directly, so results are consistent regardless of phrasing or
-  capitalization.
-- **Robust location resolution** — multi-word and qualified queries like
-  "Vancouver, BC" or "vancouver canada" fall through progressively shorter
-  prefixes until the geocoder and airport search both find a match.
-- **Token-aware context trimming** — the LLM thread is pre-trimmed to fit
-  the model's input budget, dropping oldest tool results first so long
-  conversations stay responsive.
+- **Conversational flight search** — Ask for flights in plain English. The agent resolves city names to airport codes, validates dates, and returns real results from a flight API. Strict guardrails prevent the LLM from hallucinating flight data.
+- **Multi-airport flight search** — One query fans out across all airports serving the destination metro and renders results grouped by airport with airline, duration, stops, and price.
+- **Safety scoring** — Select any location on an interactive map and get a safety score (0-100) with a risk band (low / moderate / elevated / high). Predictions are made by an ensemble of a PyTorch MLP and a scikit-learn Random Forest trained on 45 features including KNN neighborhood crime/safety indices, population density, and country-level macro indicators.
+- **Per-destination safety dial** — Each airport card shows a compact numbered gauge (0-100) with risk band, pulled from a KNN-based city safety model.
+- **Deterministic safety path** — Asking "Is Paris safe?" or "Safety Vancouver" calls the safety assessment tool directly, so results are consistent regardless of phrasing or capitalization.
+- **Robust location resolution** — Multi-word and qualified queries like "Vancouver, BC" or "vancouver canada" fall through progressively shorter prefixes until the geocoder and airport search both find a match.
+- **Local LLM** — Runs Qwen 2.5 1.5B Instruct locally with tool-calling support. No API keys or cloud dependencies for the language model. Supports CUDA, Apple Silicon (MPS), and CPU.
+- **Interactive map** — Leaflet.js-based location picker built as a custom Streamlit component for selecting destinations and triggering safety assessments.
+- **Token-aware context trimming** — The LLM thread is pre-trimmed to fit the model's input budget, dropping oldest tool results first so long conversations stay responsive.
 
 ## Safety Score Model
 
-WayFinder ships with a custom ML-based safety scoring model that predicts
-a continuous safety score for any city or geographic point. The score is
-surfaced both as a standalone safety assessment and as the per-airport
-dial shown on flight results.
+WayFinder ships with a custom ML-based safety scoring model that predicts a continuous safety score for any city or geographic point. The score is surfaced both as a standalone safety assessment and as the per-airport dial shown on flight results.
 
 ### How it works
 
-The core is a feedforward Multilayer Perceptron (MLP) regression model
-implemented in PyTorch. The production architecture uses three fully
-connected hidden layers (128 → 64 → 32) with ReLU activations, dropout,
-and L2 weight decay to keep the model honest against a relatively small
-~500-row labeled city dataset. It's trained with MSE loss and Adam on an
-80/20 hold-out split, with early stopping based on validation RMSE.
+The core is a feedforward Multilayer Perceptron (MLP) regression model implemented in PyTorch. The production architecture uses three fully connected hidden layers (128 -> 64 -> 32) with ReLU activations, dropout, and L2 weight decay to keep the model honest against a relatively small ~500-row labeled city dataset. It's trained with MSE loss and Adam on an 80/20 hold-out split, with early stopping based on validation RMSE.
 
-At inference, WayFinder actually runs two independently trained
-variants in parallel — a crime-aware model (uses city-level crime and
-safety indices where available) and a crime-agnostic model (geographic
-and macro features only). Comparing the two acts as a built-in
-cross-check and gracefully degrades when a queried point falls outside
-the labeled city catalog.
+At inference, WayFinder actually runs two independently trained variants in parallel -- a crime-aware model (uses city-level crime and safety indices where available) and a crime-agnostic model (geographic and macro features only). Comparing the two acts as a built-in cross-check and gracefully degrades when a queried point falls outside the labeled city catalog.
 
-### Features
+### Model features
 
 The feature vector for a given location combines several broad groups:
 
-- **City-level crime and safety indices** — Numbeo-style crime and
-  perceived-safety scores for labeled cities. The target city's own
-  crime index is strictly excluded during training to prevent target
-  leakage.
-- **KNN neighborhood aggregates** — crime and safety averages computed
-  over the nearest labeled cities (weighted and unweighted k=5 / k=10),
-  plus distance-to-nearest-labeled-city features. This is what lets the
-  model score unseen locations by interpolating from labeled neighbors.
-- **Density & gravity features** — log-transformed population counts,
-  population gravity, and city counts within 50 / 100 / 250 km radii.
-- **Country-level macro indicators** — GDP, GDP per capita,
-  unemployment, homicide rate, life expectancy, and governance signals
-  (rule of law, political stability, press freedom, Global Peace Index).
-- **Geographic base features** — latitude, longitude, and administrative
-  country identifiers.
+- **City-level crime and safety indices** -- Numbeo-style crime and perceived-safety scores for labeled cities. The target city's own crime index is strictly excluded during training to prevent target leakage.
+- **KNN neighborhood aggregates** -- Crime and safety averages computed over the nearest labeled cities (weighted and unweighted k=5 / k=10), plus distance-to-nearest-labeled-city features. This is what lets the model score unseen locations by interpolating from labeled neighbors.
+- **Density & gravity features** -- Log-transformed population counts, population gravity, and city counts within 50 / 100 / 250 km radii.
+- **Country-level macro indicators** -- GDP, GDP per capita, unemployment, homicide rate, life expectancy, and governance signals (rule of law, political stability, press freedom, Global Peace Index).
+- **Geographic base features** -- Latitude, longitude, and administrative country identifiers.
 
-Data is sourced from open global datasets including the World Bank
-(socioeconomic and homicide data), UNODC Global Study on Homicide, the
-Global Peace Index, and Reporters Without Borders' World Press Freedom
-Index.
+Data is sourced from open global datasets including the World Bank (socioeconomic and homicide data), UNODC Global Study on Homicide, the Global Peace Index, and Reporters Without Borders' World Press Freedom Index.
 
 ### Handling unseen cities
 
-Most real-world queries don't land on a perfectly labeled city. For any
-point on Earth, the feature pipeline geocodes the query, finds the
-nearest labeled cities via KNN, and computes neighborhood aggregates
-plus macro context for the surrounding region. If city-level crime data
-is available for the queried point the crime-aware model runs at full
-fidelity; otherwise the score falls back to the crime-agnostic regime,
-and the returned payload flags the confidence accordingly.
+Most real-world queries don't land on a perfectly labeled city. For any point on Earth, the feature pipeline geocodes the query, finds the nearest labeled cities via KNN, and computes neighborhood aggregates plus macro context for the surrounding region. If city-level crime data is available for the queried point the crime-aware model runs at full fidelity; otherwise the score falls back to the crime-agnostic regime, and the returned payload flags the confidence accordingly.
 
 ### Outputs
 
 Each safety assessment returns:
 
-- **`safety_score`** — a continuous 0–100 value (higher is safer).
-- **`risk_band`** — a bucketed label derived from the score:
+- **`safety_score`** -- A continuous 0-100 value (higher is safer).
+- **`risk_band`** -- A bucketed label derived from the score:
   - `low` (75+)
-  - `moderate` (55–74)
-  - `elevated` (35–54)
+  - `moderate` (55-74)
+  - `elevated` (35-54)
   - `high` (<35)
-- **Factor breakdown** — the most influential city-specific signals
-  behind the score, including neighborhood crime / safety averages and
-  the nearest labeled city's own values, used to explain the result
-  conversationally in chat.
-- **Confidence indicator** — whether the crime-aware model ran with
-  full feature availability or fell back to the crime-agnostic regime.
+- **Factor breakdown** -- The most influential city-specific signals behind the score, including neighborhood crime / safety averages and the nearest labeled city's own values, used to explain the result conversationally in chat.
+- **Confidence indicator** -- Whether the crime-aware model ran with full feature availability or fell back to the crime-agnostic regime.
 
-In the chat UI these outputs are rendered as a conversational markdown
-response for standalone safety queries, and as a compact numbered dial
-(`0 ├──┼──┼──┼──┤ 100` with a pointer and risk band label) on each
-airport's flight card.
+In the chat UI these outputs are rendered as a conversational markdown response for standalone safety queries, and as a compact numbered dial with a pointer and risk band label on each airport's flight card.
 
-# Installation
+## Tech Stack
 
-### Prerequisites: 
+| Layer | Technology |
+|-------|------------|
+| UI | Streamlit, Leaflet.js (custom component) |
+| LLM | Qwen 2.5 1.5B Instruct (HuggingFace Transformers) |
+| ML Models | PyTorch (MLP), scikit-learn (Random Forest), joblib |
+| Data | Pandas, NumPy |
+| Flight API | Docker container (scraper service), Requests |
+| Environment | Conda (Python 3.12.8) |
 
-#### Python Version
-For this project we are using Python version 3.12.8, conda automatically will install and set the correct python version for the project so there is nothing that needs to be done.
+## Project Structure
 
-#### 1. Install Miniconda
-
-If you are already using Anaconda or any other conda distribution, feel free to skip this step.
-
-Miniconda is a minimal installer for `conda`, which we will use for managing environments and dependencies in this project. Follow these steps to install Miniconda or go [here](https://docs.anaconda.com/miniconda/install/) to reference the documentation: 
-
-1. Open your terminal and run the following commands:
-```bash
-   $ mkdir -p ~/miniconda3
-
-   <!-- If using Apple Silicon chip M1/M2/M3 -->
-   $ curl https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh -o ~/miniconda3/miniconda.sh
-   <!-- If using intel chip -->
-   $ curl https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh -o ~/miniconda3/miniconda.sh
-
-   $ bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
-   $ rm ~/miniconda3/miniconda.sh
+```
+WayFinder/
+├── app/
+│   ├── main.py                          # Streamlit entry point
+│   ├── core/
+│   │   └── config.py                    # App settings (model name, tokens, temperature)
+│   ├── ui/
+│   │   ├── chat_page.py                 # Main page: map, safety panel, chat
+│   │   ├── chat_handlers.py             # User/assistant message handling
+│   │   ├── renderers.py                 # Streaming response rendering
+│   │   └── styles.py                    # Global CSS
+│   ├── agents/
+│   │   ├── local_tool_agent.py          # Agent orchestrator (tool loop + streaming)
+│   │   ├── tool_executor.py             # Executes tools (flights, airports, safety)
+│   │   ├── tool_call_parser.py          # Parses Qwen <tool_call> blocks
+│   │   └── tool_definitions.py         # OpenAI-style tool schemas
+│   ├── models/
+│   │   ├── chat.py                      # ChatMessage dataclass
+│   │   ├── flight_search.py             # FlightSearchRequest dataclass
+│   │   └── safety/
+│   │       ├── schemas.py               # SafetyRequest / SafetyResult
+│   │       ├── predictor.py             # Ensemble predictor (MLP + RF)
+│   │       ├── v6_features.py           # Feature engineering (45 features)
+│   │       └── artifacts/               # Trained model weights & scaler
+│   ├── services/
+│   │   ├── model_service.py             # LLM loading & streaming inference
+│   │   ├── memory_service.py            # Session state management
+│   │   ├── flight_api.py                # Flight search API client
+│   │   ├── airport_search_service.py    # Airport lookup from CSV
+│   │   └── safety_service.py            # Safety scoring service
+│   ├── prompts/
+│   │   └── system_prompts.py            # Travel agent system prompt
+│   ├── components/
+│   │   └── location_picker/             # Custom Streamlit Leaflet component
+│   └── data/
+│       ├── compiled_model_ready/        # City-level safety/demographic data
+│       └── global_data/                 # Country-level macro indicators
+├── safety/                              # Safety model training & evaluation
+├── Makefile                             # Build automation
+├── environment.yml                      # Conda dependencies
+└── docker-compose.yml                   # Flight API scraper service
 ```
 
-2. After installing and removing the installer, refresh your terminal by either closing and reopening or running the following command.
+## Prerequisites
+
+### Python (via Conda)
+This project uses Python 3.12.8. Conda handles the version automatically.
+
+If you are already using Anaconda or another conda distribution, skip to [Quick Setup](#quick-setup). Otherwise, install [Miniconda](https://docs.anaconda.com/miniconda/install/):
+
 ```bash
-$ source ~/miniconda3/bin/activate
+mkdir -p ~/miniconda3
+
+# Apple Silicon (M1/M2/M3/M4)
+curl https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh -o ~/miniconda3/miniconda.sh
+
+# Intel Mac
+curl https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh -o ~/miniconda3/miniconda.sh
+
+bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+rm ~/miniconda3/miniconda.sh
+source ~/miniconda3/bin/activate
+conda init --all
 ```
 
-3. Initialize conda on all available shells.
+You know conda is installed and working if you see `(base)` in your terminal prompt.
+
+### Make
+Usually pre-installed on macOS/Linux. Check with `make -v`. If not installed:
 ```bash
-$ conda init --all
+brew install make
 ```
 
-You know conda is installed and working if you see (base) in your terminal. Next, we want to actually use the correct environments and packages.
+### Docker
+Required for the flight search API.
 
-#### 2. Install Make
-
-Make is a build automation tool that executes commands defined in a Makefile to streamline tasks like compiling code, setting up environments, and running scripts. [more information here](https://formulae.brew.sh/formula/make)
-
-##### Installation
-
-`make` is often pre-installed on Unix-based systems (macOS and Linux). To check if it's installed, open a terminal and type:
-```bash
-make -v
-```
-
-If it is not installed, simply use brew:
-```bash
-$ brew install make
-```
-
-#### 3. Install Docker
-
-Docker is a containerization platform that packages your application, models, and dependencies into a consistent runtime environment, ensuring your multi-agent system and flight APIs run reliably across development, testing, and deployment without environment-related failures.
-
-1. Download Docker Desktop from the official site:  
-   https://docs.docker.com/get-docker/
-
-2. Follow the installation instructions for your operating system (Mac, Windows, or Linux).
-
-3. After installation, verify Docker is running:
-```bash
-  docker --version
-```
-
-
-### Step-by-step Installation
-```bash
-# Clone the repository
-git clone <your-repo-url>
-cd wayfinder
-
-# Create virtual environment (recommended)
-make create
-```
+1. Install [Docker Desktop](https://docs.docker.com/get-docker/)
+2. Verify: `docker --version`
 
 ## Quick Setup
 
-1. **Install dependencies:**
 ```bash
-  $ make create
-        or
-  $ make update
+# 1. Clone and enter the repo
+git clone <your-repo-url>
+cd wayfinder
+
+# 2. Create the conda environment
+make create
+conda activate wayfinder
+
+# 3. Start the flight API container
+make docker-compose-up
+
+# 4. Run the app
+make run
 ```
 
-2. **Setup API Docker Container**
+On first launch, the Qwen 2.5 1.5B model (~3 GB) will be downloaded from HuggingFace automatically.
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `API_BASE_URL` | `localhost:8080` | Flight search API host |
+| `API_BASE_SCHEME` | `http` | Flight API URL scheme |
+| `WAYFINDER_DEVICE` | *(auto-detect)* | Force a compute device: `cuda`, `mps`, or `cpu` |
+| `WAYFINDER_NO_MPS` | `false` | Set to `1` or `true` to skip MPS and fall back to CPU |
+
+## Makefile Commands
+
+| Command | Description |
+|---------|-------------|
+| `make create` | Create the conda environment from `environment.yml` |
+| `make update` | Update the conda environment from `environment.yml` |
+| `make clean` | Remove the conda environment |
+| `make activate` | Print the conda activate command (does **not** activate — you must run `conda activate wayfinder` yourself) |
+| `make deactivate` | Deactivate the conda environment |
+| `make run` | Start the Streamlit app |
+| `make docker-compose-up` | Start the flight API Docker container |
+| `make notebook` | Launch Jupyter Notebook |
+| `make freeze` | Export installed packages to `environment.yml` |
+| `make verify` | List conda environments to check the active one |
+
+## Example Workflows
+
+### First time setup
 ```bash
-  $ make docker-compose-up
+conda init --all
+make create
+conda activate wayfinder
+make verify
+python --version   # Should show 3.12.8
+make docker-compose-up
+make run
 ```
 
-3. **Run the streamlit server**
+### Installing a new package
 ```bash
-  $ make run
+# Verify you're in the right environment
+make verify
+
+# Install via conda (preferred)
+conda install <package_name>
+
+# If you get a PackagesNotFoundError, use pip instead — conda will still
+# track it in the environment properly
+pip install <package_name>
+
+# To remove a package
+conda remove <package_name>
+# or: pip uninstall <package_name>
+
+# Export to environment.yml so teammates get it too
+make freeze
 ```
 
-#### Available Commands
+### Daily development
+```bash
+# Before starting
+git pull origin main
+conda deactivate
+make update
+conda activate wayfinder
+make docker-compose-up
+make run
 
-The following commands are available in this project’s `Makefile`:
-
-- **Set up the environment**:
-
-    This will create the environment from the environment.yml file in the root directory of the project.
-
-    ```bash
-      $ make create
-    ```
-
-- **Update the environment**:
-
-    This will update the environment from the environment.yml file in the root directory of the project. Useful if pulling in new changes that have updated the environment.yml file.
-
-    ```bash
-      $ make update
-    ```
-
-- **Remove the environment**:
-
-    This will remove the environment from your shell. You will need to recreate and reinstall the environment with the setup command above.
-
-    ```bash
-    $ make clean
-    ```
-
-- **Activate the environment**:
-
-    This will activate the environment in your shell. Keep in mind that make will not be able to actually activate the environment, this command will just tell you what conda command you need to run in order to start the environment.
-
-    Please make sure to activate the environment before you start any development, we want to ensure that all packages that we use are the same for each of us.
-
-    ```bash
-    $ make activate
-    ```
-
-    Command you actually need to run in your terminal:
-    ```bash
-    $ conda activate wayfinder
-    ```
-
-- **Deactivate the environment**:
-
-    This will Deactivate the environment in your shell.
-
-    ```bash
-    $ make deactivate
-    ```
-
-- **Quick start**:
-
-    This command will run the quick_start python script to generate the dataset
-
-    ```bash
-    $ make quick
-    ```
-
-- **run jupyter notebook**:
-
-    This command will run jupyter notebook from within the conda environment. This is important so that we can make sure the package versions are the same for all of us! Please make sure that you have activated your environment before you run the notebook.
-
-    ```bash
-    $ make notebook
-    ```
-
-- **Export packages to env file**:
-
-    This command will export any packages you install with either `conda install ` or `pip install` to the environment.yml file. This is important because if you add any packages we want to make sure that everyones machine knows to install it.
-
-    ```bash
-    $ make freeze
-    ```
-
-- **Verify conda environment**:
-
-    This command will list all of your conda envs, the environment with the asterick next to it is the currently activated one. Ensure it is correct.
-
-    ```bash
-    $ make verify
-    ```
-
-#### Example workflows:
-
-To simplify knowing which commands you need to run and when you can follow these instructions:
-
-- **First time running, no env installed**:
-
-    In the scenario where you just cloned this repo, or this is your first time using conda. These are the commands you will run to set up your environment.
-
-    ```bash
-    <!-- Make sure that conda is initialized -->
-    $ conda init --all
-
-    <!-- Next create the env from the env file in the root directory. -->
-    $ make create
-
-    <!-- After the environment was successfully created, activate the environment. -->
-    $ conda activate wayfinder
-
-    <!-- verify the conda environment -->
-    $ make verify
-
-    <!-- verify the python version you are using. This should automatically be updated to the correct version 3.12.2 when you enter the environment. -->
-    $ python --version
-
-    <!-- Run jupyter notebook and have some fun! -->
-    $ make notebook
-    ```
-
-- **Installing a new package**:
-
-    While we are developing, we are going to need to install certain packages that we can utilize. Here is a sample workflow for installing packages. The first thing we do is verify the conda environment we are in to ensure that only the required packages get saved to the environment. We do not want to save all of the python packages that are saved onto our system to the `environment.yml` file. 
-
-    Another thing to note is that if the package is not found in the conda distribution of packages you will get a `PackagesNotFoundError`. This is okay, just use pip instead of conda to install that specific package. Conda thankfully adds them to the environment properly.
-
-    ```bash
-    <!-- verify the conda environment -->
-    $ make verify
-
-    <!-- Install the package using conda -->
-    $ conda install <package_name>
-
-    <!-- If the package is not found in the conda channels, install the package with pip. -->
-    $ pip install <package_name>
-
-    <!-- If removing a package. -->
-    $ conda remove <package_name>
-    $ pip remove <package_name>
-
-    <!-- Export the package names and versions that you downloaded to the environment.yml file -->
-    make freeze
-    ```
-
-- **Daily commands to run before starting development**:
-
-    Here is a sample workflow for the commands to run before starting development on any given day. We want to first pull all the changes from github into our local repository, 
-
-    ```brew
-    <!-- Pull changes from git -->
-    $ git pull origin main
-
-    <!-- Update env based off of the env file. It is best to deactivate the conda env before you do this step-->
-    $ conda deactivate
-    $ make update
-    $ conda activate wayfinder
-
-    $ make notebook
-    ```
-
-- **Daily commands to run after finishing development**:
-
-    Here is a sample workflow for the commands to run after finishing development for any given day.
-
-    ```brew
-    $ conda deactivate
-
-    <!-- If you updated any of the existing packages, freeze to the environment.yml file. -->
-    $ make freeze
-
-    <!-- Commit changes to git -->
-    $ git add .
-    $ git commit -m "This is my commit message!"
-    $ git push origin <branch_name>
-    ```
-
+# After finishing
+conda deactivate
+make freeze   # only if you added/updated packages
+git add .
+git commit -m "your commit message"
+git push origin <branch_name>
+```
 
 ## Contributors
+
 <table>
   <tr>
     <td>

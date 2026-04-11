@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import re
 from collections.abc import Generator
 from typing import Any
 
+import streamlit as st
+
+from agents.utils import (
+    airport_codes_from_tool_results,
+    has_tool_call_tag,
+    is_flight_search_intent,
+    is_narration,
+    latest_explicit_date,
+    ranked_destination_candidates,
+    render_multi_airport_results,
+    render_search_flights_result,
+    route_place_hints,
+    searched_since_last_user_message,
+    strict_airport_clarification,
+    strict_date_clarification,
+    strip_tool_blocks,
+    user_explicit_dates,
+    user_explicit_iata_codes,
+)
 from agents.tool_call_parser import normalize_arguments, parse_tool_calls
 from agents.tool_definitions import TOOLS
 from agents.tool_executor import ToolExecutor
@@ -14,18 +34,9 @@ from services.model_service import ModelService
 
 log = logging.getLogger("wayfinder.agent")
 
-_TOOL_STRIP = re.compile(r"<tool_call>[\s\S]*?</tool_call>", re.IGNORECASE)
-_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
-_IATA_RE = re.compile(r"\b[A-Z]{3}\b")
-_ROUTE_PATTERNS = (
-    re.compile(
-        r"\bfrom\s+(?P<origin>.+?)\s+to\s+(?P<destination>.+?)(?:$|[,.!?]| on | for )",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\bto\s+(?P<destination>.+?)\s+from\s+(?P<origin>.+?)(?:$|[,.!?]| on | for )",
-        re.IGNORECASE,
-    ),
+_FLIGHT_HALLUCINATION_RE = re.compile(
+    r"(airline|departure time|arrival time|number of stops|price.*\$)",
+    re.IGNORECASE,
 )
 
 
@@ -37,565 +48,480 @@ class AgentStreamEvent:
         self.text = text
 
 
-def _strip_tool_blocks(text: str) -> str:
-    return _TOOL_STRIP.sub("", text).strip()
-
-
-def _has_tool_call_tag(text: str) -> bool:
-    return "<tool_call>" in text.lower()
-
-
-def _user_explicit_dates(messages: list[dict[str, Any]]) -> set[str]:
-    dates: set[str] = set()
-    for message in messages:
-        if message.get("role") != "user":
-            continue
-        content = str(message.get("content", ""))
-        dates.update(_DATE_RE.findall(content))
-    return dates
-
-
-def _explicit_iata_codes_in_text(text: str) -> list[str]:
-    return _IATA_RE.findall(text)
-
-
-def _user_explicit_iata_codes(messages: list[dict[str, Any]]) -> set[str]:
-    codes: set[str] = set()
-    for message in messages:
-        if message.get("role") != "user":
-            continue
-        content = str(message.get("content", ""))
-        codes.update(_explicit_iata_codes_in_text(content))
-    return codes
-
-
-def _airport_codes_from_tool_results(messages: list[dict[str, Any]]) -> set[str]:
-    codes: set[str] = set()
-    for message in messages:
-        if message.get("role") != "tool" or message.get("name") != "search_airports":
-            continue
-        content = str(message.get("content", "")).strip()
-        if not content:
-            continue
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            continue
-        matches = payload.get("matches", [])
-        if not isinstance(matches, list):
-            continue
-        for match in matches:
-            if not isinstance(match, dict):
-                continue
-            code = str(match.get("iata", "")).strip().upper()
-            if len(code) == 3:
-                codes.add(code)
-    return codes
-
-
-def _strict_date_clarification(args: dict[str, Any]) -> str | None:
-    departure_date = str(args.get("departure_date", "")).strip()
-    return_date = str(args.get("return_date", "")).strip()
-    trip_type = str(args.get("trip_type", "oneway") or "oneway").strip().lower()
-
-    requested_dates = [d for d in [departure_date] if d]
-    if trip_type == "roundtrip" and return_date:
-        requested_dates.append(return_date)
-
-    if not requested_dates:
-        return "What date would you like to fly? Please use YYYY-MM-DD."
-
-    return None
-
-
-def _strict_airport_clarification(
-    args: dict[str, Any],
-    messages: list[dict[str, Any]],
-) -> str | None:
-    origin = str(args.get("origin", "")).strip().upper()
-    destination = str(args.get("destination", "")).strip().upper()
-
-    explicit_codes = _user_explicit_iata_codes(messages)
-    resolved_codes = _airport_codes_from_tool_results(messages)
-    grounded_codes = explicit_codes | resolved_codes
-
-    origin_grounded = len(origin) == 3 and origin in grounded_codes
-    destination_grounded = len(destination) == 3 and destination in grounded_codes
-
-    if len(origin) != 3 and len(destination) != 3:
-        return (
-            "Please tell me both the departure and destination airports. "
-            "You can use city names or 3-letter airport codes."
-        )
-    if len(origin) != 3 or not origin_grounded:
-        return (
-            "What is your departure airport? Please provide the city or the "
-            "3-letter origin airport code."
-        )
-    if len(destination) != 3 or not destination_grounded:
-        return (
-            "What is your destination airport? Please provide the city or the "
-            "3-letter destination airport code."
-        )
-    if origin == destination and len(grounded_codes) < 2:
-        return (
-            "I only have one airport so far. What is your departure airport? "
-            "Please provide the city or the 3-letter origin airport code."
-        )
-
-    return None
-
-
-def _latest_message_text(messages: list[dict[str, Any]], role: str) -> str:
-    for message in reversed(messages):
-        if message.get("role") == role:
-            return str(message.get("content", "")).strip()
-    return ""
-
-
-def _latest_explicit_date(messages: list[dict[str, Any]]) -> str | None:
-    for message in reversed(messages):
-        if message.get("role") != "user":
-            continue
-        matches = _DATE_RE.findall(str(message.get("content", "")))
-        if matches:
-            return matches[-1]
-    return None
-
-
-def _latest_airport_matches(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    for message in reversed(messages):
-        if message.get("role") != "tool" or message.get("name") != "search_airports":
-            continue
-        content = str(message.get("content", "")).strip()
-        if not content:
-            continue
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            continue
-        matches = payload.get("matches", [])
-        if isinstance(matches, list):
-            return [m for m in matches if isinstance(m, dict)]
-    return []
-
-
-def _matches_from_result(result_str: str) -> list[dict[str, Any]]:
-    try:
-        payload = json.loads(result_str)
-    except json.JSONDecodeError:
-        return []
-    matches = payload.get("matches", [])
-    if not isinstance(matches, list):
-        return []
-    return [match for match in matches if isinstance(match, dict)]
-
-
-def _normalize_place_hint(value: str) -> str:
-    cleaned = re.sub(_DATE_RE, "", value)
-    cleaned = re.sub(r"\b(it is|it's|i am|i'm|going to|traveling to)\b", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.!?").strip()
-    return cleaned
-
-
-def _route_place_hints(messages: list[dict[str, Any]]) -> dict[str, list[str]]:
-    hints: dict[str, list[str]] = {"origin": [], "destination": []}
-    for message in reversed(messages):
-        if message.get("role") != "user":
-            continue
-        content = str(message.get("content", "")).strip()
-        if not content:
-            continue
-        for pattern in _ROUTE_PATTERNS:
-            match = pattern.search(content)
-            if not match:
-                continue
-            for key in ("origin", "destination"):
-                value = _normalize_place_hint(match.group(key))
-                if value and value not in hints[key]:
-                    hints[key].append(value)
-    return hints
-
-
-def _render_search_flights_result(result_str: str) -> str | None:
-    try:
-        payload = json.loads(result_str)
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(payload, dict) or "success" not in payload:
-        return None
-
-    if payload.get("success") is False:
-        error = str(payload.get("error", "")).strip()
-        return error or "Flight search failed."
-
-    origin = str(payload.get("origin", "")).strip().upper()
-    destination = str(payload.get("destination", "")).strip().upper()
-    departure_date = str(payload.get("departure_date", "")).strip()
-    flights = payload.get("flights", [])
-
-    if payload.get("no_results") or not isinstance(flights, list) or not flights:
-        return (
-            f"I couldn't find flights from {origin} to {destination} on {departure_date}. "
-            "Want to try a different date, nearby airport, or route?"
-        )
-
-    lines = [f"Flights from {origin} to {destination} on {departure_date}:"]
-    for index, flight in enumerate(flights, start=1):
-        if not isinstance(flight, dict):
-            continue
-        airline = str(flight.get("airline", "")).strip() or "Unknown airline"
-        departure_time = str(flight.get("departure_time", "")).strip() or "Unknown departure"
-        arrival_time = str(flight.get("arrival_time", "")).strip() or "Unknown arrival"
-        duration = str(flight.get("duration", "")).strip() or "Unknown duration"
-        stops = str(flight.get("stops", "")).strip() or "Unknown stops"
-        price = str(flight.get("price", "")).strip() or "Unknown price"
-        lines.append(
-            f"{index}. {airline} | {departure_time} to {arrival_time} | {duration} | {stops} | {price}"
-        )
-
-    return "\n".join(lines)
-
-
 class LocalToolAgent:
-    """Local Qwen + tool calls + token streaming (no remote API)."""
+    """
+    Orchestrates a local Qwen model with tool calling and token streaming.
+
+    On each run():
+    - Detects flight intent before doing any pre-resolution work
+    - Pre-resolves origin, destination, and date from sidebar session state
+    - Short-circuits to search_flights once both airports and a date are grounded
+    - Falls back to model generation for non-flight queries and ambiguous cases
+    - Guards against narration loops and hallucinated flight results
+    """
 
     def __init__(self, model_service: ModelService) -> None:
         self._model = model_service
         self._executor = ToolExecutor()
 
-    def _maybe_resume_grounded_search(
-        self,
-        messages: list[dict[str, Any]],
-    ) -> tuple[str, dict[str, Any]] | None:
-        last_assistant = _latest_message_text(messages, "assistant").lower()
-        latest_user = _latest_message_text(messages, "user")
-        if not last_assistant or not latest_user:
-            return None
-
-        if "what is your departure airport" not in last_assistant:
-            return None
-
-        origin_codes = _explicit_iata_codes_in_text(latest_user)
-        if not origin_codes:
-            return None
-
-        departure_date = _latest_explicit_date(messages)
-        if not departure_date:
-            return None
-
-        destination_matches = _latest_airport_matches(messages)
-        if not destination_matches:
-            return None
-
-        destination_code = str(destination_matches[0].get("iata", "")).strip().upper()
-        if len(destination_code) != 3:
-            return None
-
-        return (
-            "search_flights",
-            {
-                "origin": origin_codes[0],
-                "destination": destination_code,
-                "departure_date": departure_date,
-                "trip_type": "oneway",
-            },
-        )
-
-    def _maybe_direct_user_search(
-        self,
-        messages: list[dict[str, Any]],
-    ) -> tuple[str, dict[str, Any]] | None:
-        if not messages or messages[-1].get("role") != "user":
-            return None
-
-        latest_user = _latest_message_text(messages, "user")
-        if not latest_user:
-            return None
-
-        explicit_codes = _explicit_iata_codes_in_text(latest_user)
-        explicit_dates = _DATE_RE.findall(latest_user)
-        if len(explicit_codes) < 2 or not explicit_dates:
-            return None
-
-        args: dict[str, Any] = {
-            "origin": explicit_codes[0],
-            "destination": explicit_codes[1],
-            "departure_date": explicit_dates[0],
-            "trip_type": "oneway",
-        }
-        if len(explicit_dates) >= 2:
-            args["trip_type"] = "roundtrip"
-            args["return_date"] = explicit_dates[1]
-
-        return ("search_flights", args)
-
-    def _maybe_resolve_route_hint_search(
-        self,
-        messages: list[dict[str, Any]],
-    ) -> tuple[str, dict[str, Any]] | None:
-        if not messages or messages[-1].get("role") != "user":
-            return None
-
-        latest_user = _latest_message_text(messages, "user")
-        if not latest_user:
-            return None
-
-        if len(_explicit_iata_codes_in_text(latest_user)) >= 2:
-            return None
-
-        hints = _route_place_hints(messages)
-        origin_hints = hints.get("origin", [])
-        destination_hints = hints.get("destination", [])
-        if not origin_hints or not destination_hints:
-            return None
-
-        departure_date = _latest_explicit_date(messages)
-        if not departure_date:
-            return None
-
-        origin_result = self._executor.run("search_airports", {"query": origin_hints[0]})
-        messages.append(
-            {"role": "tool", "name": "search_airports", "content": origin_result}
-        )
-        destination_result = self._executor.run(
-            "search_airports", {"query": destination_hints[0]}
-        )
-        messages.append(
-            {"role": "tool", "name": "search_airports", "content": destination_result}
-        )
-
-        origin_matches = _matches_from_result(origin_result)
-        destination_matches = _matches_from_result(destination_result)
-        if not origin_matches or not destination_matches:
-            return None
-
-        origin_code = str(origin_matches[0].get("iata", "")).strip().upper()
-        destination_code = str(destination_matches[0].get("iata", "")).strip().upper()
-        if len(origin_code) != 3 or len(destination_code) != 3:
-            return None
-
-        args: dict[str, Any] = {
-            "origin": origin_code,
-            "destination": destination_code,
-            "departure_date": departure_date,
-            "trip_type": "oneway",
-        }
-
-        return ("search_flights", args)
-
-    def _maybe_finish_from_tool_result(
-        self,
-        name: str,
-        result_str: str,
-    ) -> str | None:
-        if name == "search_flights":
-            return _render_search_flights_result(result_str)
-        return None
-
-    def _maybe_ground_route_codes(
+    def _ground_route_codes(
         self,
         args: dict[str, Any],
-        messages: list[dict[str, Any]],
+        thread: list[dict[str, Any]],
     ) -> None:
-        hints = _route_place_hints(messages)
-        explicit_codes = _user_explicit_iata_codes(messages)
-        grounded_codes = explicit_codes | _airport_codes_from_tool_results(messages)
+        """
+        Resolves any ungrounded IATA codes in args by running search_airports
+        on place name hints extracted from user messages.
+        """
+        hints = route_place_hints(thread)
+        grounded = user_explicit_iata_codes(thread) | airport_codes_from_tool_results(
+            thread
+        )
 
-        missing_queries: list[str] = []
-        origin = str(args.get("origin", "")).strip().upper()
-        destination = str(args.get("destination", "")).strip().upper()
+        queries: list[str] = []
+        for key, hint_key in [("origin", "origin"), ("destination", "destination")]:
+            code = str(args.get(key, "")).strip().upper()
+            if len(code) == 3 and code not in grounded:
+                for hint in hints[hint_key]:
+                    if hint.upper() != code:
+                        queries.append(hint)
+                        break
 
-        if len(origin) == 3 and origin not in grounded_codes:
-            for hint in hints["origin"]:
-                if hint.upper() != origin:
-                    missing_queries.append(hint)
-                    break
-
-        grounded_codes = explicit_codes | _airport_codes_from_tool_results(messages)
-        if len(destination) == 3 and destination not in grounded_codes:
-            for hint in hints["destination"]:
-                if hint.upper() != destination:
-                    missing_queries.append(hint)
-                    break
-
-        for query in missing_queries:
+        for query in queries:
             log.info("AGENT AUTO-RESOLVE airport query=%s", query)
             result_str = self._executor.run("search_airports", {"query": query})
-            messages.append({"role": "tool", "name": "search_airports", "content": result_str})
+            thread.append(
+                {"role": "tool", "name": "search_airports", "content": result_str}
+            )
+
+    def _pre_resolve_destination(self, thread: list[dict[str, Any]]) -> Generator:
+        """Resolves the map-picked destination into the thread."""
+        selected = st.session_state.get("selected_location")
+        if selected is None:
+            return
+
+        location_query = (
+            selected.get("city")
+            or selected.get("county")
+            or selected.get("state_region")
+            or selected.get("country")
+        )
+        if not location_query:
+            return
+
+        log.info("AGENT pre-resolving destination=%s", location_query)
+        yield AgentStreamEvent("status", f"Resolving destination: {location_query}…")
+        result_str = self._executor.run("search_airports", {"query": location_query})
+        thread.append(
+            {"role": "tool", "name": "search_airports", "content": result_str}
+        )
+
+    def _pre_resolve_origin(self, thread: list[dict[str, Any]]) -> Generator:
+        """Injects the sidebar-resolved departure airport as a synthetic tool result."""
+        departure_resolved = st.session_state.get("departure_city_resolved")
+        if not departure_resolved:
+            return
+
+        iata = str(departure_resolved.get("iata", "")).strip().upper()
+        if len(iata) != 3:
+            return
+
+        log.info("AGENT pre-resolving origin=%s", iata)
+        yield AgentStreamEvent("status", f"Using departure: {iata}…")
+        synthetic = json.dumps({"matches": [departure_resolved], "count": 1})
+        thread.append({"role": "tool", "name": "search_airports", "content": synthetic})
+
+    def _pre_inject_date(
+        self,
+        thread: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+    ) -> str | None:
+        """
+        Resolves the departure date from chat or sidebar and injects it
+        into the thread. Returns the resolved date string or None.
+        """
+        latest_chat_date = latest_explicit_date(messages)
+        sidebar_date = st.session_state.get("departure_date")
+
+        date_str = None
+        if latest_chat_date:
+            date_str = latest_chat_date
+            log.info("AGENT using chat-provided date=%s", date_str)
+            try:
+                parsed = datetime.date.fromisoformat(latest_chat_date)
+                if parsed != sidebar_date:
+                    st.session_state["departure_date"] = parsed
+                    st.session_state["_date_from_chat"] = True
+            except ValueError:
+                pass
+        elif sidebar_date:
+            date_str = sidebar_date.strftime("%Y-%m-%d")
+            log.info("AGENT using sidebar date=%s", date_str)
+
+        if date_str:
+            thread.append(
+                {"role": "user", "content": f"[context: departure date is {date_str}]"}
+            )
+        return date_str
+
+    def _run_short_circuit(
+        self,
+        thread: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+        grounded_codes: set[str],
+        explicit_dates: set[str],
+        date_str: str | None,
+    ) -> Generator[AgentStreamEvent, None, None] | None:
+        """
+        If both airports are grounded and a date exists, searches all
+        ranked destination candidates and renders aggregated results.
+        Returns a generator if it handled the request, None otherwise.
+        """
+        origin = st.session_state.get("departure_city_resolved", {}).get("iata")
+        if not origin or origin not in grounded_codes:
+            origin = next(iter(grounded_codes))
+
+        candidates = ranked_destination_candidates(thread, exclude=origin)
+        if not candidates:
+            return None
+
+        departure_date_str = date_str or sorted(explicit_dates)[0]
+
+        def _generate():
+            all_results: list[dict] = []
+
+            for destination in candidates:
+                args = {
+                    "origin": origin,
+                    "destination": destination,
+                    "departure_date": departure_date_str,
+                    "trip_type": "oneway",
+                }
+                log.info(
+                    "AGENT SHORT-CIRCUIT search_flights  %s→%s date=%s",
+                    origin,
+                    destination,
+                    departure_date_str,
+                )
+                yield AgentStreamEvent("status", f"Searching {origin} → {destination}…")
+                result_str = self._executor.run("search_flights", args)
+                tool_msg = {
+                    "role": "tool",
+                    "name": "search_flights",
+                    "content": result_str,
+                }
+                thread.append(tool_msg)
+                messages.append(tool_msg)
+
+                try:
+                    payload = json.loads(result_str)
+                except json.JSONDecodeError:
+                    continue
+
+                if payload.get("success") and payload.get("flights"):
+                    all_results.append(
+                        {
+                            "origin": origin,
+                            "destination": destination,
+                            "departure_date": departure_date_str,
+                            "flights": payload["flights"],
+                        }
+                    )
+                    log.info(
+                        "AGENT SHORT-CIRCUIT %s→%s returned %d flights",
+                        origin,
+                        destination,
+                        len(payload["flights"]),
+                    )
+                else:
+                    log.info(
+                        "AGENT SHORT-CIRCUIT %s→%s no flights", origin, destination
+                    )
+
+            if all_results:
+                final_text = render_multi_airport_results(all_results)
+            else:
+                tried = ", ".join(candidates)
+                final_text = (
+                    f"I couldn't find any flights from **{origin}** to "
+                    f"nearby airports ({tried}) on **{departure_date_str}**.\n\n"
+                    "Would you like to try different dates or a different destination?"
+                )
+
+            yield AgentStreamEvent("done", final_text)
+            messages.append({"role": "assistant", "content": final_text})
+
+        return _generate()
+
+    def _check_tool_call_args(
+        self,
+        calls: list[dict[str, Any]],
+        thread: list[dict[str, Any]],
+    ) -> str | None:
+        """
+        Validates tool call arguments before execution.
+        Returns a clarification string if something is missing, None if all good.
+        """
+        explicit_dates_now = user_explicit_dates(thread)
+
+        for call in calls:
+            name = str(call.get("name", "")).strip()
+            args = normalize_arguments(call.get("arguments", {}))
+
+            if name == "search_flights":
+                self._ground_route_codes(args, thread)
+
+                airport_msg = strict_airport_clarification(args, thread)
+                if airport_msg:
+                    return airport_msg
+
+                date_msg = strict_date_clarification(args)
+                if date_msg is None:
+                    requested = [str(args.get("departure_date", "")).strip()]
+                    if any(d and d not in explicit_dates_now for d in requested):
+                        date_msg = (
+                            "Please give me the exact travel date in YYYY-MM-DD format."
+                        )
+                if date_msg:
+                    return date_msg
+
+        return None
+
+    def _execute_tool_calls(
+        self,
+        calls: list[dict[str, Any]],
+        thread: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+    ) -> Generator[AgentStreamEvent, None, None]:
+        """
+        Executes validated tool calls and yields status/done events.
+        Only called after _check_tool_call_args returns None.
+        """
+        for call in calls:
+            name = str(call.get("name", "")).strip()
+            args = normalize_arguments(call.get("arguments", {}))
+
+            yield AgentStreamEvent("status", f"Running `{name}`…")
+            result_str = self._executor.run(name, args)
+            tool_msg = {"role": "tool", "name": name, "content": result_str}
+            thread.append(tool_msg)
+            messages.append(tool_msg)
+
+            if name == "search_flights":
+                final_text = render_search_flights_result(result_str)
+                if final_text:
+                    yield AgentStreamEvent("done", final_text)
+                    messages.append({"role": "assistant", "content": final_text})
+                    return
 
     def run(
         self,
         messages: list[dict[str, Any]],
     ) -> Generator[AgentStreamEvent, None, None]:
-        """
-        Mutates ``messages`` in place (same list as session llm thread).
-        Final user-visible text is emitted as an event with kind ``done``.
-
-        Intermediate tool-call steps are **not** streamed to the UI — only a
-        status caption is shown so the user sees progress without raw XML.
-        The final non-tool-call generation is streamed token-by-token.
-        """
         log.info("AGENT START  steps=%d", settings.agent_max_steps)
         yield AgentStreamEvent("status", "Thinking…")
 
+        user_wants_flights = is_flight_search_intent(messages)
+        log.info("AGENT flight_intent=%s", user_wants_flights)
+
+        thread: list[dict[str, Any]] = list(messages)
+        date_str: str | None = None
+
+        # ── Pre-resolution (flight requests only) ──────────────────────────
+        if user_wants_flights:
+            yield from self._pre_resolve_destination(thread)
+            yield from self._pre_resolve_origin(thread)
+            date_str = self._pre_inject_date(thread, messages)
+            log.info("AGENT pre-resolution complete  date_str=%s", date_str)
+        else:
+            log.info("AGENT skipping pre-resolution, not a flight request")
+
+        # ── Agent loop ─────────────────────────────────────────────────────
         for step in range(settings.agent_max_steps):
             is_last_possible = step == settings.agent_max_steps - 1
 
-            direct_call = self._maybe_direct_user_search(messages)
-            if direct_call is not None:
-                name, args = direct_call
-                log.info(
-                    "AGENT DIRECT  %s args=%s",
-                    name,
-                    json.dumps(args, default=str),
-                )
-                yield AgentStreamEvent("status", f"Running `{name}`…")
-                result_str = self._executor.run(name, args)
-                messages.append({"role": "tool", "name": name, "content": result_str})
-                final_text = self._maybe_finish_from_tool_result(name, result_str)
-                if final_text is not None:
-                    yield AgentStreamEvent("done", final_text)
-                    messages.append({"role": "assistant", "content": final_text})
-                    return
-                if not is_last_possible:
-                    yield AgentStreamEvent("status", "Processing results…")
-                    continue
+            grounded_codes = user_explicit_iata_codes(
+                thread
+            ) | airport_codes_from_tool_results(thread)
+            explicit_dates = user_explicit_dates(thread)
+            already_searched = searched_since_last_user_message(thread)
 
-            route_hint_call = self._maybe_resolve_route_hint_search(messages)
-            if route_hint_call is not None:
-                name, args = route_hint_call
-                log.info(
-                    "AGENT RESOLVED  %s args=%s",
-                    name,
-                    json.dumps(args, default=str),
-                )
-                yield AgentStreamEvent("status", f"Running `{name}`…")
-                result_str = self._executor.run(name, args)
-                messages.append({"role": "tool", "name": name, "content": result_str})
-                final_text = self._maybe_finish_from_tool_result(name, result_str)
-                if final_text is not None:
-                    yield AgentStreamEvent("done", final_text)
-                    messages.append({"role": "assistant", "content": final_text})
-                    return
-                if not is_last_possible:
-                    yield AgentStreamEvent("status", "Processing results…")
-                    continue
-
-            resumed_call = self._maybe_resume_grounded_search(messages)
-            if resumed_call is not None:
-                name, args = resumed_call
-                log.info(
-                    "AGENT RESUME  %s args=%s",
-                    name,
-                    json.dumps(args, default=str),
-                )
-                yield AgentStreamEvent("status", f"Running `{name}`…")
-                result_str = self._executor.run(name, args)
-                messages.append({"role": "tool", "name": name, "content": result_str})
-                final_text = self._maybe_finish_from_tool_result(name, result_str)
-                if final_text is not None:
-                    yield AgentStreamEvent("done", final_text)
-                    messages.append({"role": "assistant", "content": final_text})
-                    return
-                if not is_last_possible:
-                    yield AgentStreamEvent("status", "Processing results…")
-                    continue
-
-            full_text = ""
-            stream_to_ui = False
-
-            for token in self._model.stream_agent_turn(messages, tools=TOOLS):
-                full_text += token
-
-                if not stream_to_ui and not _has_tool_call_tag(full_text):
-                    yield AgentStreamEvent("token", token)
-                elif not stream_to_ui and _has_tool_call_tag(full_text):
-                    stream_to_ui = False
-
-            log.info("AGENT STEP %d  generated %d chars  has_tool_call=%s", step + 1, len(full_text), _has_tool_call_tag(full_text))
-            messages.append({"role": "assistant", "content": full_text})
-
-            calls = parse_tool_calls(full_text)
-            if not calls:
-                visible = _strip_tool_blocks(full_text) or full_text.strip()
-                log.info("AGENT DONE   final reply %d chars", len(visible))
-                yield AgentStreamEvent("done", visible)
-                return
-
-            yield AgentStreamEvent(
-                "status",
-                f"Searching ({len(calls)} tool call{'s' if len(calls) > 1 else ''})…",
+            log.info(
+                "AGENT STEP %d  grounded=%s  dates=%s  already_searched=%s  "
+                "user_wants_flights=%s  is_last=%s",
+                step + 1,
+                grounded_codes,
+                explicit_dates,
+                already_searched,
+                user_wants_flights,
+                is_last_possible,
+            )
+            log.debug(
+                "AGENT STEP %d  roles=%s",
+                step + 1,
+                [f"{m.get('role')}:{m.get('name', '')}" for m in thread],
             )
 
-            explicit_dates = _user_explicit_dates(messages)
-            for call in calls:
-                name = str(call.get("name", "")).strip()
-                args = normalize_arguments(call.get("arguments", {}))
+            # ── Short-circuit to search_flights ───────────────────────────────
+            short_circuit_eligible = (
+                user_wants_flights
+                and len(grounded_codes) >= 2
+                and bool(explicit_dates)
+                and not already_searched
+            )
+            log.info(
+                "AGENT STEP %d  short_circuit_eligible=%s  "
+                "(grounded=%d dates=%d already_searched=%s)",
+                step + 1,
+                short_circuit_eligible,
+                len(grounded_codes),
+                len(explicit_dates),
+                already_searched,
+            )
 
-                if name == "search_flights":
-                    self._maybe_ground_route_codes(args, messages)
-                    airport_clarification = _strict_airport_clarification(
-                        args,
-                        messages,
-                    )
-                    if airport_clarification is not None:
-                        log.info(
-                            "AGENT BLOCKED search_flights  ungrounded route origin=%s destination=%s",
-                            str(args.get("origin", "")).strip().upper(),
-                            str(args.get("destination", "")).strip().upper(),
-                        )
-                        messages.pop()
-                        yield AgentStreamEvent("done", airport_clarification)
-                        messages.append(
-                            {"role": "assistant", "content": airport_clarification}
-                        )
-                        return
-
-                    clarification = _strict_date_clarification(args)
-                    requested_dates = [
-                        str(args.get("departure_date", "")).strip(),
-                    ]
-                    return_date = str(args.get("return_date", "")).strip()
-                    trip_type = str(args.get("trip_type", "oneway") or "oneway").strip().lower()
-                    if trip_type == "roundtrip" and return_date:
-                        requested_dates.append(return_date)
-
-                    if clarification is None:
-                        missing_explicit_dates = [
-                            d for d in requested_dates if d and d not in explicit_dates
-                        ]
-                        if missing_explicit_dates:
-                            clarification = (
-                                "Please give me the exact travel date in YYYY-MM-DD format. "
-                                "I can't use relative dates like 'tomorrow' or 'next Friday'."
-                            )
-
-                    if clarification is not None:
-                        log.info(
-                            "AGENT BLOCKED search_flights  explicit_dates=%s requested=%s",
-                            sorted(explicit_dates),
-                            requested_dates,
-                        )
-                        messages.pop()
-                        yield AgentStreamEvent("done", clarification)
-                        messages.append({"role": "assistant", "content": clarification})
-                        return
-
-                yield AgentStreamEvent("status", f"Running `{name}`…")
-                result_str = self._executor.run(name, args)
-                messages.append(
-                    {"role": "tool", "name": name, "content": result_str}
+            if short_circuit_eligible:
+                log.info("AGENT STEP %d  entering short-circuit", step + 1)
+                gen = self._run_short_circuit(
+                    thread, messages, grounded_codes, explicit_dates, date_str
                 )
-                final_text = self._maybe_finish_from_tool_result(name, result_str)
-                if final_text is not None:
-                    yield AgentStreamEvent("done", final_text)
-                    messages.append({"role": "assistant", "content": final_text})
+                if gen is not None:
+                    log.info(
+                        "AGENT STEP %d  short-circuit generator active, yielding",
+                        step + 1,
+                    )
+                    yield from gen
+                    log.info(
+                        "AGENT STEP %d  short-circuit complete, returning", step + 1
+                    )
+                    log.info("AGENT DONE at short-circuit")
+                    return
+                else:
+                    log.info(
+                        "AGENT STEP %d  short-circuit returned None (no candidates), "
+                        "falling through to model",
+                        step + 1,
+                    )
+
+            # ── Model generation ───────────────────────────────────────────
+            log.info("AGENT STEP %d  starting model generation", step + 1)
+            full_text = ""
+            yield AgentStreamEvent("status", "Thinking…")
+
+            for token in self._model.stream_agent_turn(thread, tools=TOOLS):
+                full_text += token
+
+            log.info(
+                "AGENT STEP %d  model generation complete  chars=%d  has_tool_call=%s",
+                step + 1,
+                len(full_text),
+                has_tool_call_tag(full_text),
+            )
+
+            calls = parse_tool_calls(full_text)
+            visible = strip_tool_blocks(full_text) or full_text.strip()
+
+            log.info(
+                "AGENT STEP %d  parsed  calls=%d  visible_chars=%d",
+                step + 1,
+                len(calls),
+                len(visible),
+            )
+
+            # ── Narration guard ────────────────────────────────────────────
+            if not calls and is_narration(visible) and not is_last_possible:
+                log.info(
+                    "AGENT STEP %d  narration detected, looping: %r",
+                    step + 1,
+                    visible[:120],
+                )
+                yield AgentStreamEvent("status", "Searching…")
+                continue
+
+            # ── Hallucination guard ────────────────────────────────────────
+            if (
+                not calls
+                and user_wants_flights
+                and not is_last_possible
+                and _FLIGHT_HALLUCINATION_RE.search(visible)
+                and not any(m.get("name") == "search_flights" for m in thread)
+            ):
+                log.warning(
+                    "AGENT STEP %d  hallucination detected, looping: %r",
+                    step + 1,
+                    visible[:120],
+                )
+                yield AgentStreamEvent("status", "Searching…")
+                continue
+
+            # ── Tool calls ─────────────────────────────────────────────────
+            if calls:
+                log.info(
+                    "AGENT STEP %d  executing %d tool call(s)", step + 1, len(calls)
+                )
+                thread.append({"role": "assistant", "content": full_text})
+                yield AgentStreamEvent(
+                    "status",
+                    f"Searching ({len(calls)} tool call{'s' if len(calls) > 1 else ''})…",
+                )
+
+                clarification = self._check_tool_call_args(calls, thread)
+                if clarification:
+                    log.info(
+                        "AGENT STEP %d  clarification required: %r",
+                        step + 1,
+                        clarification[:120],
+                    )
+                    thread.pop()
+                    yield AgentStreamEvent("done", clarification)
+                    messages.append({"role": "assistant", "content": clarification})
+                    log.info(
+                        "AGENT DONE at CLARIFICATION final reply %d chars", len(visible)
+                    )
                     return
 
-            if not is_last_possible:
-                yield AgentStreamEvent("status", "Processing results…")
+                got_done = False
+                for event in self._execute_tool_calls(calls, thread, messages):
+                    yield event
+                    if event.kind == "done":
+                        got_done = True
+
+                if got_done:
+                    log.info(
+                        "AGENT STEP %d  tool execution produced final response, returning",
+                        step + 1,
+                    )
+                    log.info(
+                        "AGENT DONE tool execution finished. final reply %d chars",
+                        len(visible),
+                    )
+                    return
+
+                log.info(
+                    "AGENT STEP %d  tool executed, no final response yet, continuing loop",
+                    step + 1,
+                )
+                continue
+
+            # ── Final response ─────────────────────────────────────────────
+            log.info(
+                "AGENT STEP %d  no tool calls, no guards triggered — "
+                "treating as final response  chars=%d",
+                step + 1,
+                len(visible),
+            )
+            thread.append({"role": "assistant", "content": full_text})
+            messages.append({"role": "assistant", "content": full_text})
+            log.info("AGENT DONE  final reply %d chars", len(visible))
+            yield AgentStreamEvent("done", visible)
+            return
+
+        # ── Max steps fallback ─────────────────────────────────────────────
+        log.warning(
+            "AGENT MAX STEPS REACHED  steps=%d  last_grounded=%s  last_dates=%s",
+            settings.agent_max_steps,
+            grounded_codes,
+            explicit_dates,
+        )
 
         fallback = (
             "I hit the maximum number of steps. Could you provide more specific "
@@ -605,6 +531,7 @@ class LocalToolAgent:
         messages.append({"role": "assistant", "content": fallback})
 
     def run_collect(self, messages: list[dict[str, Any]]) -> str:
+        """Convenience method that collects and returns the final response text."""
         last = ""
         for event in self.run(messages):
             if event.kind == "done":

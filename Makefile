@@ -45,7 +45,7 @@ verify:
 	conda info --envs
 
 docker-compose-up:
-	docker-compose up -d
+	docker compose up -d
 
 run: 
 	streamlit run app/main.py

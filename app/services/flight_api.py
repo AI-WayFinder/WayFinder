@@ -1,3 +1,5 @@
+"""HTTP client for the flight search API (Docker container)."""
+
 import logging
 import os
 from typing import Any, Dict, List

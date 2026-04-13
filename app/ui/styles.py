@@ -1,3 +1,5 @@
+"""Global CSS injection for the WayFinder dark theme (slate palette, blue accents)."""
+
 import streamlit as st
 
 

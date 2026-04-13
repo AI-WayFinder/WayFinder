@@ -1,4 +1,4 @@
-# app/models/safety/v6_data_loading.py
+"""Data loading and train/test splitting for v6 safety model training."""
 from dataclasses import dataclass
 from typing import Any
 

@@ -1,3 +1,5 @@
+"""Data model for chat messages exchanged between user, assistant, and system."""
+
 from dataclasses import dataclass
 
 

@@ -1,6 +1,8 @@
-# app/models/safety/v6_features.py
+"""V6 feature engineering: KNN neighborhood, density/gravity, and macro feature builders.
 
-# app/models/safety/v6_features.py
+Builds a 45-feature vector for any geographic point, aligning with the column
+order used during model training (FEATURE_COLS_V6).
+"""
 
 from __future__ import annotations
 
@@ -429,72 +431,3 @@ class SafetyV6FeatureBuilder:
                 return float(row["lat"]), float(row["lon"]), country_val
 
         return None
-
-''' older implemtaition below
-# KNN neighborhood features (from KNN notebook)
-KNN_FEATURE_COLS = [
-    "dist_nearest_labeled_city",
-    "log1p_dist_nearest_labeled_city",
-    "crime_nearest_labeled_city",
-    "safety_nearest_labeled_city",
-    "same_country_as_nearest_labeled",
-    "avg_crime_k5",
-    "avg_safety_k5",
-    "avg_crime_k10",
-    "avg_safety_k10",
-    "wavg_crime_k5",
-    "wavg_safety_k5",
-    "log1p_num_labeled_within_50km",
-    "log1p_num_labeled_within_100km",
-    "log1p_num_labeled_within_250km",
-    "avg_crime_same_country_k5",
-    "avg_safety_same_country_k5",
-    "log1p_num_same_country_within_250km",
-]
-
-# Density / gravity features
-DENSITY_GRAVITY_FEATURE_COLS = [
-    "log1p_num_cities_50km",
-    "log1p_sum_pop_50km",
-    "log1p_pop_gravity_50km",
-    "log1p_num_cities_100km",
-    "log1p_sum_pop_100km",
-    "log1p_pop_gravity_100km",
-    "dist_to_nearest_large_city",
-    "log1p_dist_to_nearest_large_city",
-    "log1p_pop_of_nearest_large_city",
-]
-
-# Base city + country features already in v5 table
-BASE_FEATURE_COLS = [
-    "lat",
-    "lon",
-    "crimeindex_2020",
-    "crimeindex_2023",
-    "safetyindex_2020",
-    "age_0_14",
-    "age_15_64",
-    "age_65_plus",
-    "population",
-    "density_per_km2",
-]
-
-# Macro columns built in data_cleaner (macro v5) 
-MACRO_COLS_V6 = [
-    "gdp",
-    "gdp_per_capita",
-    "unemployment",
-    "homicide_rate",
-    "life_expectancy_male",
-    "life_expectancy_female",
-    "infant_mortality",
-    "urban_population_growth",
-    "tourists",
-]
-
-FEATURE_COLS_V6 = list(
-    dict.fromkeys(
-        KNN_FEATURE_COLS + DENSITY_GRAVITY_FEATURE_COLS + BASE_FEATURE_COLS + MACRO_COLS_V6
-    )
-)
-'''

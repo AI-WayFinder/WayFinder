@@ -1,3 +1,5 @@
+"""Grounding helpers: extract IATA codes, dates, and route hints from the conversation thread."""
+
 from __future__ import annotations
 
 import datetime

@@ -1,3 +1,5 @@
+"""Executes tool calls (flights, airports, safety, web search) and formats results for the LLM."""
+
 import json
 import logging
 import re
@@ -5,10 +7,6 @@ from typing import Any
 
 from services.airport_search_service import search_airports
 from services.flight_api import FlightAPIService
-
-"""
-added below for safety function
-"""
 from services.safety_service import SafetyService
 from services.tavily_service import TavilyService
 
@@ -262,7 +260,6 @@ class ToolExecutor:
             )
 
         if name == "get_safety_assessment":
-            print(arguments)
             latitude = arguments.get("latitude")
             longitude = arguments.get("longitude")
             country = arguments.get("country")

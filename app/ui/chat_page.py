@@ -1,3 +1,5 @@
+"""Main Streamlit page: sidebar controls, map picker, safety panel, and chat interface."""
+
 import streamlit as st
 
 import datetime

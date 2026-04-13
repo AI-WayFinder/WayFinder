@@ -1,3 +1,5 @@
+"""Helpers for rendering streaming and final chat responses in the Streamlit UI."""
+
 import html
 
 

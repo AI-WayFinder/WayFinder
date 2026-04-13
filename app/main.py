@@ -1,3 +1,5 @@
+"""Streamlit entry point for the WayFinder travel assistant application."""
+
 import logging
 
 from ui.chat_page import render_chat_page

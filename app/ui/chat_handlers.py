@@ -1,3 +1,5 @@
+"""Handlers for user message submission and assistant response streaming."""
+
 import streamlit as st
 
 from agents.local_tool_agent import LocalToolAgent

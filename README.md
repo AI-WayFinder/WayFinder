@@ -78,38 +78,61 @@ WayFinder/
 │   │   ├── chat_page.py                 # Main page: map, safety panel, chat
 │   │   ├── chat_handlers.py             # User/assistant message handling
 │   │   ├── renderers.py                 # Streaming response rendering
-│   │   └── styles.py                    # Global CSS
+│   │   ├── styles.py                    # Global CSS
+│   │   └── translate_widget.py          # Floating live-translate widget
 │   ├── agents/
 │   │   ├── local_tool_agent.py          # Agent orchestrator (tool loop + streaming)
 │   │   ├── tool_executor.py             # Executes tools (flights, airports, safety)
 │   │   ├── tool_call_parser.py          # Parses Qwen <tool_call> blocks
-│   │   └── tool_definitions.py         # OpenAI-style tool schemas
+│   │   ├── tool_definitions.py          # OpenAI-style tool schemas
+│   │   └── utils/                       # Intent, grounding, clarification helpers
 │   ├── models/
 │   │   ├── chat.py                      # ChatMessage dataclass
-│   │   ├── flight_search.py             # FlightSearchRequest dataclass
 │   │   └── safety/
 │   │       ├── schemas.py               # SafetyRequest / SafetyResult
 │   │       ├── predictor.py             # Ensemble predictor (MLP + RF)
 │   │       ├── v6_features.py           # Feature engineering (45 features)
+│   │       ├── v6_config.py             # Model paths and constants
+│   │       ├── v6_train.py              # Training script (MLP + RF)
+│   │       ├── v6_data_loading.py       # Data loading and splits
+│   │       ├── feature_pipeline.py      # Feature column loading and scaling
 │   │       └── artifacts/               # Trained model weights & scaler
 │   ├── services/
 │   │   ├── model_service.py             # LLM loading & streaming inference
 │   │   ├── memory_service.py            # Session state management
 │   │   ├── flight_api.py                # Flight search API client
 │   │   ├── airport_search_service.py    # Airport lookup from CSV
-│   │   └── safety_service.py            # Safety scoring service
+│   │   ├── safety_service.py            # Safety scoring service
+│   │   └── tavily_service.py            # Web search with JSON caching
 │   ├── prompts/
-│   │   └── system_prompts.py            # Travel agent system prompt
+│   │   ├── system_prompts.py            # Travel agent system prompt
+│   │   └── prompt_builder.py            # Chat message formatting
 │   ├── components/
 │   │   └── location_picker/             # Custom Streamlit Leaflet component
 │   └── data/
 │       ├── compiled_model_ready/        # City-level safety/demographic data
 │       └── global_data/                 # Country-level macro indicators
-├── safety/                              # Safety model training & evaluation
+├── notebooks/                           # Research notebooks (see Project Elements)
+│   ├── 01_data_cleaning/                # Data merging, normalization, imputation
+│   ├── 02_exploratory_data_analysis/    # Visualizations, distributions, maps
+│   ├── 03_model_design_and_training/    # Feature engineering, MLP, GB, RF training
+│   ├── 04_model_optimization/           # Inference pipeline tuning
+│   └── 05_model_analysis_and_evaluation/# Metrics, error analysis, comparisons
 ├── Makefile                             # Build automation
 ├── environment.yml                      # Conda dependencies
 └── docker-compose.yml                   # Flight API scraper service
 ```
+
+### Project Elements
+
+| Requirement | Location |
+|------------|----------|
+| **Data Cleaning** | `notebooks/01_data_cleaning/` — City safety cleaner, data merger, macro cleaner |
+| **Exploratory Data Analysis** | `notebooks/02_exploratory_data_analysis/` — Distributions, world maps, country-level exploration |
+| **Model / Pipeline Design and Building** | `notebooks/03_model_design_and_training/` + `app/models/safety/` — Feature engineering, MLP architecture, ensemble design |
+| **Model Training** | `notebooks/03_model_design_and_training/` + `app/models/safety/v6_train.py` — PyTorch MLP and scikit-learn RF training |
+| **Model Optimization** | `notebooks/04_model_optimization/` — Inference pipeline profiling and tuning |
+| **Model / Pipeline Analysis and Discussion** | `notebooks/05_model_analysis_and_evaluation/` — Test predictions, error analysis, feature importance |
 
 ## Prerequisites
 

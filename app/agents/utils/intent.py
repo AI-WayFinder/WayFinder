@@ -1,3 +1,5 @@
+"""Intent classifiers: detect flight, safety, web-search, and narration patterns in user input."""
+
 from __future__ import annotations
 
 import re

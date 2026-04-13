@@ -1,3 +1,5 @@
+"""Utility to convert ChatMessage lists into LLM-ready message dicts with history windowing."""
+
 from typing import List
 
 from models.chat import ChatMessage

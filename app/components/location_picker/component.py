@@ -1,3 +1,5 @@
+"""Streamlit component wrapper for the interactive map-based location picker."""
+
 from __future__ import annotations
 
 from pathlib import Path

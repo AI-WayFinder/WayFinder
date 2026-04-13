@@ -1,3 +1,5 @@
+"""Tool-result rendering: converts raw JSON from flights and safety tools into Markdown responses."""
+
 from __future__ import annotations
 
 import datetime

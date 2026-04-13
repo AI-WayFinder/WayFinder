@@ -1,3 +1,5 @@
+"""Session state management for chat history, LLM thread, and context trimming."""
+
 import json
 from typing import List
 

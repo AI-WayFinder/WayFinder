@@ -1,3 +1,5 @@
+"""Agent orchestrator: tool loop, streaming, pre-resolution, and guardrails for the local LLM."""
+
 from __future__ import annotations
 
 import datetime

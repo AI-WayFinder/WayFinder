@@ -1,3 +1,5 @@
+"""LLM loading and streaming inference service for the Qwen local model."""
+
 import logging
 import os
 from threading import Thread

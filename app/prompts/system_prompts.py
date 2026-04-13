@@ -1,3 +1,5 @@
+"""System prompt template and builder for the travel agent LLM persona."""
+
 import streamlit as st
 
 # Core rules: search-only, tool-backed flight data, anti-hallucination.

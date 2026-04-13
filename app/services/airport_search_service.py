@@ -1,3 +1,5 @@
+"""Airport lookup service: loads an airports CSV and scores results by relevance."""
+
 import csv
 import os
 from dataclasses import dataclass

@@ -1,4 +1,4 @@
-# app/models/safety/v6_config.py
+"""Paths and constants for v6 model training and artifact storage."""
 from pathlib import Path
 
 # repo root: ... / app / models / safety / v6_config.py → parents[2]

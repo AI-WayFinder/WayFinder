@@ -1,3 +1,5 @@
+"""Pre-flight validation: checks for missing dates and ungrounded airport codes."""
+
 from __future__ import annotations
 
 from typing import Any

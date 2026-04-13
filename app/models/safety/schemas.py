@@ -1,3 +1,5 @@
+"""Request and result data classes for the safety scoring pipeline."""
+
 from dataclasses import dataclass
 from typing import Any
 

@@ -1,3 +1,5 @@
+"""Safety scoring service: validates inputs, runs the ensemble predictor, and returns risk bands."""
+
 from __future__ import annotations
 
 import math

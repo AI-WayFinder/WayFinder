@@ -1,6 +1,3 @@
-"""Session state management for chat history, LLM thread, and context trimming."""
-
-import json
 from typing import List
 
 import streamlit as st
@@ -15,39 +12,6 @@ _WELCOME_MESSAGE = (
 )
 
 log = logging.getLogger("wayfinder.agent")
-
-
-def _compact_old_tool_content(name: str, content: str) -> str:
-    """
-    Reduce old tool-result payloads to their essential fields so that
-    previous exchanges don't bloat the prompt or confuse the model.
-
-    The `instruction` key is always stripped — it is a per-response
-    directive that is meaningless (and harmful) in conversation history.
-    """
-    try:
-        data = json.loads(content)
-    except (json.JSONDecodeError, TypeError):
-        return content
-
-    data.pop("instruction", None)
-
-    if name == "search_flights":
-        flights = data.get("flights", [])
-        data = {
-            "success": data.get("success"),
-            "origin": data.get("origin"),
-            "destination": data.get("destination"),
-            "departure_date": data.get("departure_date"),
-            "total_returned": data.get("total_returned", len(flights)),
-        }
-    elif name == "search_airports":
-        data = {"matches": data.get("matches", [])[:3], "count": data.get("count")}
-    elif name == "get_safety_assessment":
-        # Keep score/band; drop verbose feature details
-        data.pop("details", None)
-
-    return json.dumps(data)
 
 
 class MemoryService:
@@ -150,7 +114,6 @@ class MemoryService:
             "departure_city_candidates",
             "departure_date",
             "_date_from_chat",
-            "_destination_from_chat",
         ):
             st.session_state.pop(key, None)
 
@@ -162,71 +125,42 @@ class MemoryService:
         return ""
 
     @classmethod
-    def trim_llm_thread_for_context(
-        cls,
-        model_service=None,
-        tools=None,
-        target_tokens: int | None = None,
-    ) -> None:
+    def trim_llm_thread_for_context(cls, max_messages: int = 20) -> None:
         """
-        Token-aware pre-agent trim. If ``model_service`` is provided, uses
-        its tokenizer to count tokens and delegates to
-        ``_trim_thread_to_fit`` for the actual pruning. Otherwise no-ops —
-        the in-agent trim will catch any overflow just-in-time.
+        Remove old tool result messages from the middle of the thread when it
+        grows too large, preserving the system prompt, recent user/assistant
+        turns, and any tool messages from the last 2 exchanges.
         """
-        if model_service is None:
-            return
-
         thread = st.session_state.get(cls.LLM_KEY, [])
-        if not thread:
+        if len(thread) <= max_messages:
             return
 
-        if target_tokens is None:
-            max_in = getattr(model_service, "MAX_INPUT_TOKENS", 4096)
-            target_tokens = int(max_in * 0.85)
+        system = [m for m in thread if m.get("role") == "system"]
+        rest = [m for m in thread if m.get("role") != "system"]
 
-        # Local import to avoid a circular dependency at module load
-        from agents.local_tool_agent import _trim_thread_to_fit
+        # Drop old tool messages first — they're the bulkiest and least needed
+        trimmed = [m for m in rest if m.get("role") != "tool"]
 
-        before = len(thread)
-        _trim_thread_to_fit(
-            thread,
-            count_tokens=model_service.count_tokens,
-            tools=tools,
-            target_tokens=target_tokens,
+        # If still too long, keep only the most recent turns
+        if len(system) + len(trimmed) > max_messages:
+            trimmed = trimmed[-(max_messages - len(system)) :]
+
+        st.session_state[cls.LLM_KEY] = system + trimmed
+        log.info(
+            "LLM thread trimmed to %d messages", len(st.session_state[cls.LLM_KEY])
         )
-        if len(thread) != before:
-            st.session_state[cls.LLM_KEY] = thread
-            log.info(
-                "LLM thread trimmed to %d messages (was %d)",
-                len(thread),
-                before,
-            )
 
     @classmethod
     def get_clean_llm_messages(cls) -> list:
         """
-        Returns the LLM thread with only valid roles for model input.
-
-        - Strips nudge/context injection messages from previous agent runs.
-        - Compacts tool results from *previous* exchanges: strips the
-          `instruction` directive field and reduces large payloads (flight
-          lists, airport lists) to a short summary. This prevents old tool
-          blobs from confusing the model when the topic changes.
-        - Tool results that belong to the *current* exchange (after the last
-          user message) are left untouched so the model can use them fully.
+        Returns the LLM thread with only valid roles for model input:
+        system, user, assistant, and tool. Strips any duplicate assistant
+        turns or leftover nudge messages from previous agent runs.
         """
         cls.initialize()
         thread = st.session_state.get(cls.LLM_KEY, [])
-
-        # Index of the last user message separates previous from current exchange
-        last_user_idx = max(
-            (i for i, m in enumerate(thread) if m.get("role") == "user"),
-            default=len(thread),
-        )
-
         cleaned = []
-        for i, m in enumerate(thread):
+        for m in thread:
             role = m.get("role", "")
             content = m.get("content", "")
 
@@ -238,30 +172,7 @@ class MemoryService:
             # Strip context injections from previous agent runs
             if role == "user" and content.startswith("[context:"):
                 continue
-
-            # Drop orphan tool messages — a tool result without an
-            # immediately preceding assistant(<tool_call>) turn breaks
-            # Qwen's chat template and causes the next generation to
-            # hallucinate. This can happen when prior short-circuit runs
-            # persisted raw tool results without a wrapping assistant
-            # turn.
-            if role == "tool":
-                prev = cleaned[-1] if cleaned else None
-                prev_is_tool_call = (
-                    prev is not None
-                    and prev.get("role") == "assistant"
-                    and "<tool_call>" in str(prev.get("content", "")).lower()
-                )
-                if not prev_is_tool_call:
-                    continue
-
-            # Compact tool results from previous exchanges
-            if role == "tool" and i < last_user_idx:
-                name = m.get("name", "")
-                compacted = _compact_old_tool_content(name, content)
-                cleaned.append({**m, "content": compacted})
-                continue
-
+            # Only keep valid roles
             if role in ("system", "user", "assistant", "tool"):
                 cleaned.append(m)
 

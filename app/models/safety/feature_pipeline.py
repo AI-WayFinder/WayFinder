@@ -1,5 +1,3 @@
-"""Stub feature pipeline for loading feature columns and scaling (used by older predictor versions)."""
-
 from __future__ import annotations
 
 from pathlib import Path

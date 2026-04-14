@@ -1,4 +1,4 @@
-"""Training script for v6 safety models (MLP + Random Forest) with artifact export."""
+# app/models/safety/v6_train.py
 import json
 
 import joblib

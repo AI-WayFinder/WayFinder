@@ -1,5 +1,3 @@
-"""Grounding helpers: extract IATA codes, dates, and route hints from the conversation thread."""
-
 from __future__ import annotations
 
 import datetime
@@ -215,12 +213,30 @@ def _normalize_place_hint(value: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip(" ,.!?").strip()
 
 
+def route_place_hints(messages: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """
+    Extracts origin and destination place name hints from user messages
+    using route pattern matching ('from X to Y').
+    """
+    hints: dict[str, list[str]] = {"origin": [], "destination": []}
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
+        for pattern in _ROUTE_PATTERNS:
+            match = pattern.search(content)
+            if not match:
+                continue
+            for key in ("origin", "destination"):
+                value = _normalize_place_hint(match.group(key))
+                if value and value not in hints[key]:
+                    hints[key].append(value)
+    return hints
+
+
 # Matches chat mentions of a destination after a flight/travel verb.
-# Designed to capture things like:
-#   "flights to Paris", "fly to Tokyo", "trip to Bangkok",
-#   "travelling to Madrid", "going to NYC", "heading to Rome"
-# The non-greedy `(?:\w+\s+){0,3}?` allows an optional origin clause
-# ("flights from NYC to Paris") between the verb and "to".
 _CHAT_DEST_RE = re.compile(
     r"""
     \b(?:flights?|fly(?:ing)?|trip|travell?ing|head(?:ing)?|
@@ -249,26 +265,3 @@ def latest_destination_mention(messages: list[dict[str, Any]]) -> str | None:
         return None
     normalized = _normalize_place_hint(match.group("dest"))
     return normalized or None
-
-
-def route_place_hints(messages: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """
-    Extracts origin and destination place name hints from user messages
-    using route pattern matching ('from X to Y').
-    """
-    hints: dict[str, list[str]] = {"origin": [], "destination": []}
-    for message in reversed(messages):
-        if message.get("role") != "user":
-            continue
-        content = str(message.get("content", "")).strip()
-        if not content:
-            continue
-        for pattern in _ROUTE_PATTERNS:
-            match = pattern.search(content)
-            if not match:
-                continue
-            for key in ("origin", "destination"):
-                value = _normalize_place_hint(match.group(key))
-                if value and value not in hints[key]:
-                    hints[key].append(value)
-    return hints

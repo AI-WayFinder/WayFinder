@@ -1,5 +1,3 @@
-"""Thread introspection helpers for navigating the chat message history."""
-
 from __future__ import annotations
 
 import json

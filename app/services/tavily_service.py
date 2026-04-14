@@ -241,7 +241,12 @@ class TavilyService:
         return None
 
     def _enrich_country_json(self, country_code: str, category: str, data: dict):
-        """Read country JSON, merge new data into the category field, write back."""
+        """Read country JSON, merge new data into the category field, write back.
+
+        If no JSON file exists for the country yet, create a minimal skeleton
+        under the appropriate continent subfolder (or ``unknown/`` if the
+        country code isn't in ``COUNTRY_TO_CONTINENT``).
+        """
         json_path = _find_country_json(country_code)
         if json_path is None:
             json_path = self._create_country_json(country_code)

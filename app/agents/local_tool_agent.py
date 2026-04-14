@@ -803,16 +803,18 @@ class LocalToolAgent:
 
     # ── Regex for destination knowledge queries that should check JSON first ──
     _DESTINATION_KNOWLEDGE_RE = re.compile(
-        r"(?:surf|surfing|hike|hiking|trek|trail|food|eat|restaurant|dish|cuisine|drink|"
+        r"(?:" 
+        r"surf|surfing|hike|hiking|trek|trail|food|eat|restaurant|dish|cuisine|drink|"
         r"wildlife|animals|birds|national park|reserve|preserve|nature|budget|cost|"
-        r"price|cheap|expensive|money|lodging|hotel|hostel|weather|climate|rain|"
-        r"season|culture|festival|tradition|art|etiquette|customs|transport|bus|train|"
-        r"taxi|getting around|airport|vaccine|health|medical|visa|entry|passport|border|"
+        r"price|cheap|expensive|money|lodging|hotel|hostel|weather|climate|rain|season|"
+        r"best time|best month|best season|time of year|when to go|when should i visit|"
+        r"culture|festival|tradition|art|etiquette|customs|transport|bus|train|taxi|"
+        r"getting around|airport|vaccine|health|medical|visa|entry|passport|border|"
         r"safety|safe|crime|danger|"
         r"tell me everything|what do you know|give me an overview|all about|"
-        r"what can you tell|tell me about|"
-        r"what else|tell me more|anything else|more about|what other|"
-        r"continue|go on|and what about)",
+        r"what can you tell|tell me about|what else|tell me more|anything else|"
+        r"more about|what other|continue|go on|and what about"
+        r")",
         re.IGNORECASE,
     )
 
@@ -846,6 +848,7 @@ class LocalToolAgent:
         (re.compile(r"culture|festival|tradition|art", re.I), "culture"),
         (re.compile(r"vaccine|health|medical", re.I), "health"),
         (re.compile(r"lodging|hotel|hostel", re.I), "budget"),
+        (re.compile(r"best time|best month|best season|time of year|when to go|when should i visit", re.I), "weather"),
     ]
 
     def _classify_query(self, query: str) -> tuple[str, str]:
@@ -892,7 +895,11 @@ class LocalToolAgent:
 
         Returns (country_code, country_name) or (None, "").
         """
-        code_to_name = {"ec": "Ecuador", "pe": "Peru"}
+        code_to_name = {
+            "ec": "Ecuador",
+            "pe": "Peru",
+            "jp": "Japan",
+        }
         country_code = None
 
         # 1. Try to detect country directly from the query text
@@ -908,11 +915,21 @@ class LocalToolAgent:
                 "arequipa", "mancora", "huanchaco",
             ]):
                 country_code = "pe"
-
+            elif any(w in query_lower for w in [
+                "japan", "japanese", "tokyo", "kyoto",
+                "osaka", "sapporo", "hokkaido", "nagano",
+            ]):
+                country_code = "jp"
         # 2. Fall back to session state if query text didn't match
         if not country_code:
-            country_map = {"ecuador": "ec", "peru": "pe", "Ecuador": "ec", "Peru": "pe"}
-
+            country_map = {
+            "ecuador": "ec",
+            "peru": "pe",
+            "japan": "jp",
+            "Ecuador": "ec",
+            "Peru": "pe",
+            "Japan": "jp",
+        }
             # Check selected_location FIRST (destination_airport is never written)
             selected = st.session_state.get("selected_location") or {}
             sel_country = selected.get("country", "").lower()
@@ -923,7 +940,8 @@ class LocalToolAgent:
                     country_code = "ec"
                 elif any(c in sel_city for c in ["lima", "cusco", "arequipa", "mancora", "huanchaco"]):
                     country_code = "pe"
-
+                elif any(c in sel_city for c in ["tokyo", "kyoto", "osaka", "sapporo", "hokkaido", "nagano"]):
+                    country_code = "jp"
             if not country_code:
                 destination = st.session_state.get("destination_airport", {})
                 country_name = ""
@@ -937,6 +955,8 @@ class LocalToolAgent:
                     country_code = "ec"
                 elif any(c in dest_city for c in ["lima", "cusco", "arequipa", "mancora", "huanchaco"]):
                     country_code = "pe"
+                elif any(c in dest_city for c in ["tokyo", "kyoto", "osaka", "sapporo", "hokkaido", "nagano"]):
+                    country_code = "jp"
 
         if not country_code:
             return None, ""

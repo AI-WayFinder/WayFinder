@@ -718,11 +718,15 @@ def _render_map_tab(active_country: str, data: dict | None) -> None:
     ##### added below this 4/14 -- trying to combat the lat lon out of bounds & location picker reverting to SA country (snapping back)
     
     m = folium.Map(
-    location=center,
-    zoom_start=zoom,
+    location=[-15, -60], # starts on SA which is are intial target
+    zoom_start=3,
     tiles=None,
     min_zoom=2,
     max_bounds=True,
+    min_lat=-85,
+    max_lat=85,
+    min_lon=-180,
+    max_lon=180,
     )
 
     folium.TileLayer(
@@ -730,7 +734,7 @@ def _render_map_tab(active_country: str, data: dict | None) -> None:
         no_wrap=True,
     ).add_to(m)
 
-    m.fit_bounds([[-85, -180], [85, 180]])
+  
 
     #### to here 4/14
 
@@ -913,6 +917,8 @@ def _render_map_tab(active_country: str, data: dict | None) -> None:
     clicked = map_data.get("last_clicked") if map_data else None
     if clicked and clicked.get("lat") is not None and clicked.get("lng") is not None:
         c_lat, c_lng = clicked["lat"], clicked["lng"]
+        c_lng = ((c_lng + 180) % 360) - 180                          ###### added above this 4/14 -- trying to combat the lat lon out of bounds & location picker reverting to SA country (snapping back)
+
         if (c_lat != st.session_state.get("explore_click_lat")
                 or c_lng != st.session_state.get("explore_click_lon")):
             st.session_state["explore_click_lat"] = c_lat

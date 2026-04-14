@@ -1,5 +1,3 @@
-"""Intent classifiers: detect flight, safety, web-search, and narration patterns in user input."""
-
 from __future__ import annotations
 
 import re
@@ -9,30 +7,33 @@ _FLIGHT_INTENT_RE = re.compile(
     r"""
     \b(
         flight|flights|fly|flying|airfare|ticket|tickets|
-        search|find|look\s*up|show\s*me|get\s*me|book|
-        depart|departure|leave|leaving|travel|trip
+        search\s+flights|find\s+flights|look\s*up\s+flights|
+        show\s*me\s+flights|get\s*me\s+flights|book\s+flights|
+        depart|departure
     )\b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Strict subset — only these words count as *explicit* flight keywords
+# when the message also matches non-flight patterns.
+_EXPLICIT_FLIGHT_RE = re.compile(
+    r"\b(flight|flights|fly|flying|airfare|ticket|tickets|book|"
+    r"depart|departure|arrive|arrival|one[- ]?way|round[- ]?trip)\b",
+    re.IGNORECASE,
+)
+
 _NON_FLIGHT_RE = re.compile(
     r"\b(tell\s*me\s*about|what\s*is|what's|describe|info|information|"
     r"weather|hotel|hotels|restaurant|things\s*to\s*do|attraction|"
-    r"safe|safety|visa|currency|culture|language|timezone)\b",
+    r"safe|safety|visa|currency|culture|language|timezone|"
+    r"history|hike|hiking|wildlife|food|cuisine|nature|"
+    r"general|overview|guide|geography|population)\b",
     re.IGNORECASE,
 )
 
 _SAFETY_INTENT_RE = re.compile(
     r"\b(safe|safety|dangerous|danger|crime|criminal|risk|risky|secure|security|hazard|hazardous)\b",
-    re.IGNORECASE,
-)
-
-_WEB_SEARCH_INTENT_RE = re.compile(
-    r"\b(web|search the web|surf|surfing|hike|hiking|trek|trail|food|eat|restaurant|dish|"
-    r"wildlife|animals|birds|visa|entry|border|vaccine|medical|budget|cost|price|cheap|expensive|"
-    r"lodging|hotel|hostel|weather|climate|rain|season|national park|reserve|nature|"
-    r"transport|bus|taxi|culture|etiquette|customs|cenote|cenotes|beach|beaches)\b",
     re.IGNORECASE,
 )
 
@@ -56,6 +57,11 @@ def is_flight_search_intent(messages: list[dict[str, Any]]) -> bool:
     Returns True only if the most recent real user message is asking
     for a flight search. Prevents pre-resolution firing on general
     travel questions like 'tell me about LA'.
+
+    When non-flight patterns are detected (general info, culture, food,
+    etc.), requires explicit flight keywords (flight, fly, book, ticket,
+    depart, arrive) — broad words like "travel" or "trip" alone are not
+    enough.
     """
     from agents.utils.thread import latest_user_message
 
@@ -67,8 +73,11 @@ def is_flight_search_intent(messages: list[dict[str, Any]]) -> bool:
     if _SAFETY_INTENT_RE.search(latest):
         return False
 
-    if _NON_FLIGHT_RE.search(latest) and not _FLIGHT_INTENT_RE.search(latest):
-        return False
+    # If the message matches non-flight patterns (general info questions),
+    # require explicit flight keywords — broad words like "travel"/"trip"
+    # are not sufficient on their own.
+    if _NON_FLIGHT_RE.search(latest):
+        return bool(_EXPLICIT_FLIGHT_RE.search(latest))
 
     return bool(_FLIGHT_INTENT_RE.search(latest))
 
@@ -84,20 +93,6 @@ def is_safety_intent(messages: list[dict[str, Any]]) -> bool:
     if not latest:
         return False
     return bool(_SAFETY_INTENT_RE.search(latest))
-
-
-def is_web_search_intent(messages: list[dict[str, Any]]) -> bool:
-    """
-    Returns True if the user asks for anything related to the web search categories
-    (e.g., food, hikes, visas, budget, beaches) so we can bypass the flight short-circuit
-    and let the agent answer both.
-    """
-    from agents.utils.thread import latest_user_message
-
-    latest = latest_user_message(messages)
-    if not latest:
-        return False
-    return bool(_WEB_SEARCH_INTENT_RE.search(latest))
 
 
 def is_narration(text: str) -> bool:

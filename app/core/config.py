@@ -1,5 +1,3 @@
-"""Application-wide settings: model name, token limits, and agent parameters."""
-
 from dataclasses import dataclass
 
 

@@ -1,19 +1,17 @@
-"""Executes tool calls (flights, airports, safety, web search) and formats results for the LLM."""
-
 import json
 import logging
 import re
 from typing import Any
 
+import streamlit as st
+
 from services.airport_search_service import search_airports
 from services.flight_api import FlightAPIService
 from services.safety_service import SafetyService
-from services.tavily_service import TavilyService
 
 
 log = logging.getLogger("wayfinder.tools")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
 
 # Only city-specific factors. Country-level macros (homicide_rate,
 # gdp_per_capita, unemployment) are deliberately excluded because they
@@ -121,7 +119,6 @@ class ToolExecutor:
     def __init__(self) -> None:
         self._flights = FlightAPIService()
         self._safety = SafetyService()
-        self._tavily = TavilyService()
 
     def run(self, name: str, arguments: dict[str, Any]) -> str:
         log.info("TOOL CALL  %-20s args=%s", name, json.dumps(arguments, default=str))
@@ -264,17 +261,50 @@ class ToolExecutor:
             longitude = arguments.get("longitude")
             country = arguments.get("country")
             location_name = arguments.get("location_name")
+
             if location_name:
                 location_name = str(location_name).strip()
             if country:
                 country = str(country).strip()
 
+            # ── Prefer session-state destination over LLM tool-call arg ───
+            session_dest = (
+                st.session_state.get("destination_city")
+                or st.session_state.get("destination_airport")
+                or None
+            )
+            if not session_dest:
+                selected = st.session_state.get("selected_location") or {}
+                session_dest = (
+                    selected.get("city")
+                    or selected.get("county")
+                    or selected.get("state_region")
+                    or selected.get("country")
+                    or None
+                )
+            if session_dest:
+                if isinstance(session_dest, dict):
+                    session_location = (
+                        session_dest.get("city")
+                        or session_dest.get("name")
+                        or session_dest.get("iata")
+                        or None
+                    )
+                else:
+                    session_location = str(session_dest)
+                if session_location:
+                    location_name = session_location
+
+            # Auto-geocode from location name if no coords provided
             if latitude is None or longitude is None:
                 if not location_name:
                     return json.dumps(
                         {
                             "success": False,
-                            "error": "Provide location_name (e.g. 'Los Angeles') or both latitude and longitude.",
+                            "error": (
+                                "To run a safety assessment, please select a destination first. "
+                                "Use the 📍 Pick a destination button in the sidebar."
+                            ),
                         }
                     )
                 geocoded = self._safety.geocode_place(location_name)
@@ -320,32 +350,19 @@ class ToolExecutor:
             return json.dumps(result)
 
         if name == "search_web":
-            query = str(arguments.get("query", "")).strip()
-            country_code = arguments.get("country_code")
-            if country_code:
-                country_code = str(country_code).strip()
-            
-            if not query:
-                return json.dumps({"error": "Provide a search query."})
-            
-            result = self._tavily.search(query, country_code)
+            if not st.session_state.get("tavily_enabled", False):
+                return json.dumps({
+                    "success": False,
+                    "error": "Web search is currently disabled. The user can enable it via ⚙️ Dev Tools in the sidebar.",
+                })
+            from services.tavily_service import TavilyService
+            result = TavilyService().search(
+                arguments.get("query", ""),
+                arguments.get("country_code"),
+            )
             if result is None:
-                if not self._tavily.enabled:
-                    return json.dumps({"error": "Tavily web search is currently disabled by the user. Ask them to enable it in the sidebar."})
-                return json.dumps({"error": "No results found or API request failed."})
-            
-            # Format nicely so the LLM doesn't get overwhelmed with raw JSON
-            if isinstance(result, dict) and "data" in result:
-                # This indicates it's from json_cache
-                return json.dumps({"source": "local_cache", "results": result["data"]})
-            elif isinstance(result, dict) and "results" in result:
-                # From Tavily API
-                summaries = [
-                    f"Title: {r.get('title')}\nContent: {r.get('content')}"
-                    for r in result.get("results", [])
-                ]
-                return json.dumps({"source": "web_search", "results": summaries})
-            return json.dumps(result)
+                return json.dumps({"success": False, "error": "No results found."})
+            return json.dumps(result, default=str)
 
         log.warning("TOOL CALL  unknown tool: %s", name)
         return json.dumps({"error": f"Unknown tool: {name}"})

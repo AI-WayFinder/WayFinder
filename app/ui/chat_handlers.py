@@ -1,9 +1,6 @@
-"""Handlers for user message submission and assistant response streaming."""
-
 import streamlit as st
 
 from agents.local_tool_agent import LocalToolAgent
-from agents.tool_definitions import TOOLS
 from services.memory_service import MemoryService
 from services.model_service import ModelService
 from ui.renderers import build_streaming_response
@@ -18,10 +15,7 @@ def handle_user_message(user_input: str) -> None:
 
 
 def handle_assistant_response(model_service: ModelService) -> None:
-    MemoryService.trim_llm_thread_for_context(
-        model_service=model_service,
-        tools=TOOLS,
-    )
+    MemoryService.trim_llm_thread_for_context()
     messages = MemoryService.get_clean_llm_messages()
     agent = LocalToolAgent(model_service)
 
@@ -55,8 +49,3 @@ def handle_assistant_response(model_service: ModelService) -> None:
 
     st.session_state[MemoryService.LLM_KEY] = messages
     MemoryService.add_message("assistant", buffer)
-
-    # If the agent updated the destination from chat, rerun so the sidebar
-    # card reflects the new location immediately.
-    if st.session_state.get("_destination_from_chat"):
-        st.rerun()

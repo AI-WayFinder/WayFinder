@@ -1,5 +1,3 @@
-"""Tool-result rendering: converts raw JSON from flights and safety tools into Markdown responses."""
-
 from __future__ import annotations
 
 import datetime
@@ -7,7 +5,6 @@ import json
 import re
 from typing import Any
 
-# Qwen-style XML blocks
 _TOOL_STRIP = re.compile(r"<tool_call>[\s\S]*?</tool_call>", re.IGNORECASE)
 
 
@@ -131,13 +128,7 @@ _BAND_META = {
 
 
 def _render_factor_prose(factors: dict, location: str) -> str:
-    """Weave the structured factor dict into conversational paragraphs.
-
-    All factors here are city-specific (KNN averages over nearby cities
-    plus the single nearest labelled city). Country-level macros are
-    intentionally excluded from the response because they're identical
-    for every city in the same country.
-    """
+    """Weave the structured factor dict into conversational paragraphs."""
     nb_crime = factors.get("neighbourhood_crime")
     nb_safety = factors.get("neighbourhood_safety")
     near_crime = factors.get("nearest_city_crime")
@@ -145,7 +136,6 @@ def _render_factor_prose(factors: dict, location: str) -> str:
 
     parts: list[str] = []
 
-    # ── Neighbourhood (KNN-5 average) sentence ─────────────────────────────
     nb_bits: list[str] = []
     if nb_crime is not None:
         nb_bits.append(
@@ -166,7 +156,6 @@ def _render_factor_prose(factors: dict, location: str) -> str:
             f"roughly 45 for crime and 55 for safety."
         )
 
-    # ── Nearest-city sentence ──────────────────────────────────────────────
     near_bits: list[str] = []
     if near_crime is not None:
         near_bits.append(f"**{near_crime:.0f}/100** for crime")
@@ -214,7 +203,6 @@ def render_safety_result(result_str: str) -> str | None:
         "advice": "",
     })
 
-    # ── Header ─────────────────────────────────────────────────────────────
     lines = [
         f"## {meta['emoji']} {location} — {meta['label']}",
         "",
@@ -222,25 +210,21 @@ def render_safety_result(result_str: str) -> str | None:
         "",
     ]
 
-    # ── Lead paragraph (natural sentence with the band) ───────────────────
     lines.append(
         f"Based on the data I have, **{location}** {meta['lead']}. "
         "Here's what's behind that number:"
     )
     lines.append("")
 
-    # ── Factor prose ───────────────────────────────────────────────────────
     factor_prose = _render_factor_prose(factors, location)
     if factor_prose:
         lines.append(factor_prose)
         lines.append("")
 
-    # ── Advice paragraph ───────────────────────────────────────────────────
     if meta["advice"]:
         lines.append(meta["advice"])
         lines.append("")
 
-    # ── Disclaimer ─────────────────────────────────────────────────────────
     lines.append(
         "*One thing to keep in mind: this is a model-based estimate built from "
         "geographic and socioeconomic data — not an official government travel "
@@ -258,8 +242,6 @@ _SAFETY_BAND_EMOJI = {
     "high": "🔴",
 }
 
-# Bar spans positions 0-20 (21 cells), so each tick (0/25/50/75/100)
-# lands on a cell boundary and the scale/divider/bar all line up.
 _DIAL_CELLS = 21
 _DIAL_SCALE = "0    25   50   75   100"
 _DIAL_DIVIDER = "├────┼────┼────┼────┤"
@@ -269,10 +251,6 @@ def _render_safety_dial(brief: dict[str, Any] | None) -> str:
     """
     Renders a compact numbered-dial gauge for a safety brief. Returns an
     empty string when the brief lacks a score so callers can skip cleanly.
-
-    The dial is a fenced code block so monospace alignment holds across
-    Streamlit's markdown renderer. Heading and band label sit above the
-    fence where emoji render correctly.
     """
     if not brief:
         return ""
@@ -288,13 +266,10 @@ def _render_safety_dial(brief: dict[str, Any] | None) -> str:
     except (TypeError, ValueError):
         return ""
 
-    # Map 0..100 onto cells 0..(_DIAL_CELLS-1) so 100 lands on the last cell.
     filled = int(round(clamped / 100.0 * (_DIAL_CELLS - 1)))
     filled = max(0, min(_DIAL_CELLS, filled))
     bar = "█" * filled + "░" * (_DIAL_CELLS - filled)
 
-    # Pointer caret sits directly under the score's column so the reader
-    # can read the exact position on the 0–100 scale.
     pointer_row = " " * filled + "▲"
 
     emoji = _SAFETY_BAND_EMOJI.get(band, "⚪")

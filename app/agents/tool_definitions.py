@@ -112,20 +112,21 @@ TOOLS: list[dict] = [
         "function": {
             "name": "search_web",
             "description": (
-                "Search the web for up-to-date information on travel logistics, "
-                "such as visa entry requirements, top hiking trails, regional foods, "
-                "budget guidelines, or customs and etiquette."
+                "Search the web for current travel information — surf spots, lodging prices, "
+                "restaurants, local tips, activities, events. Use when the user asks about "
+                "something not covered by flight search or safety tools. Only available when "
+                "web search is enabled."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query formulation.",
+                        "description": "Natural language search query",
                     },
                     "country_code": {
                         "type": "string",
-                        "description": "Optional 2-letter ISO country code to retrieve/save local cached info.",
+                        "description": "2-letter ISO country code if known (e.g. EC, PE)",
                     },
                 },
                 "required": ["query"],

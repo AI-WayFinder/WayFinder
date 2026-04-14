@@ -1,5 +1,3 @@
-"""Parses Qwen-style <tool_call>...</tool_call> blocks from model output."""
-
 import json
 import re
 from typing import Any
